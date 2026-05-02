@@ -43,7 +43,9 @@ export function createApp() {
   return app;
 }
 
-function corsOptions(): cors.CorsOptions {
+type CorsDecisionCallback = (error: Error | null, allow?: boolean) => void;
+
+function corsOptions() {
   const raw = env.allowedOrigins.trim();
   if (raw === "*" || raw.length == 0) {
     return { origin: true };
@@ -55,7 +57,7 @@ function corsOptions(): cors.CorsOptions {
     .filter(Boolean);
 
   return {
-    origin(origin, callback) {
+    origin(origin: string | undefined, callback: CorsDecisionCallback) {
       if (!origin || allowed.includes(origin)) {
         callback(null, true);
         return;
