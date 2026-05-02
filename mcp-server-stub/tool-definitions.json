@@ -1,0 +1,51 @@
+{
+  "tools": [
+    {
+      "name": "get_daily_health_summary",
+      "description": "Get one normalized daily health summary for a user and date.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": { "type": "string" },
+          "date": { "type": "string", "description": "YYYY-MM-DD" }
+        },
+        "required": ["userId", "date"]
+      }
+    },
+    {
+      "name": "get_weekly_health_summary",
+      "description": "Get recent normalized health summaries for a user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": { "type": "string" },
+          "days": { "type": "integer", "default": 7, "minimum": 1, "maximum": 30 }
+        },
+        "required": ["userId"]
+      }
+    },
+    {
+      "name": "get_user_goal",
+      "description": "Get the stored nutrition goal for a user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": { "type": "string" }
+        },
+        "required": ["userId"]
+      }
+    },
+    {
+      "name": "generate_diet_recommendation",
+      "description": "Generate a structured deterministic diet recommendation from normalized health summaries and a user goal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "userId": { "type": "string" },
+          "date": { "type": "string", "description": "YYYY-MM-DD" }
+        },
+        "required": ["userId"]
+      }
+    }
+  ]
+}

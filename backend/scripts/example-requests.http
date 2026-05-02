@@ -1,0 +1,46 @@
+### Health check
+GET http://localhost:4000/api/health
+
+### Upsert user goal
+POST http://localhost:4000/api/user-goal
+Content-Type: application/json
+
+{
+  "userId": "demo-user",
+  "goal": "fat_loss",
+  "notes": "Prefer simple meals on workdays."
+}
+
+### Upsert daily health summary
+POST http://localhost:4000/api/health-summary
+Content-Type: application/json
+
+{
+  "userId": "demo-user",
+  "date": "2026-04-26",
+  "steps": 8123,
+  "activeEnergyKcal": 512,
+  "workoutCount": 1,
+  "workoutMinutes": 38,
+  "workoutEnergyKcal": 275,
+  "sleepHours": 6.9,
+  "restingHeartRateBpm": 58,
+  "hrvMs": 44,
+  "weightKg": 78.4,
+  "heightCm": 178
+}
+
+### Get one summary
+GET http://localhost:4000/api/health-summary/demo-user/2026-04-26
+
+### Get 7-day range
+GET http://localhost:4000/api/health-summary/demo-user?days=7
+
+### Generate diet recommendation
+POST http://localhost:4000/api/diet-recommendation
+Content-Type: application/json
+
+{
+  "userId": "demo-user",
+  "date": "2026-04-26"
+}

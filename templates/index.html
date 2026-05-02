@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Email Protein Planner</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="settings-rail">
+        <div class="rail-card rail-brand">
+          <p class="eyebrow">Weekly Email Planner</p>
+          <h1>Plan with plain English.</h1>
+          <p class="rail-copy">
+            Type what you want. The app updates your weekly protein plan, preview,
+            and email schedule without making you manage a messy dashboard.
+          </p>
+        </div>
+
+        <div class="rail-card rail-summary">
+          <div class="summary-item">
+            <span class="summary-label">Target</span>
+            <strong>{{ target }}g/day</strong>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Mode</span>
+            <strong>
+              {% if settings.delivery_mode == "shopping_only" %}
+                Shopping only
+              {% elif settings.delivery_mode == "menu_only" %}
+                Menu only
+              {% else %}
+                Full plan
+              {% endif %}
+            </strong>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Next cadence</span>
+            <strong>{{ schedule }}</strong>
+          </div>
+        </div>
+
+        <details class="rail-card settings-card">
+          <summary>Settings</summary>
+
+          <div class="control-group">
+            <label for="targetProtein">Daily protein target</label>
+            <input id="targetProtein" type="number" min="80" max="150" step="5" value="{{ target }}" />
+          </div>
+
+          <div class="control-group">
+            <label for="recipient">Email recipient</label>
+            <input id="recipient" type="email" placeholder="you@example.com" value="{{ settings.recipient }}" />
+          </div>
+
+          <div class="control-group">
+            <label for="deliveryMode">Message mode</label>
+            <select id="deliveryMode">
+              <option value="full" {% if settings.delivery_mode == "full" %}selected{% endif %}>Full plan + shopping list</option>
+              <option value="menu_only" {% if settings.delivery_mode == "menu_only" %}selected{% endif %}>Menu only</option>
+              <option value="shopping_only" {% if settings.delivery_mode == "shopping_only" %}selected{% endif %}>Shopping list only</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label for="customizationNotes">Customization note</label>
+            <input id="customizationNotes" type="text" value="{{ settings.customization_notes }}" placeholder="Budget-friendly, breakfast-focused, etc." />
+          </div>
+
+          <div class="settings-actions">
+            <button id="previewBtn" class="ghost-btn">Refresh preview</button>
+            <button id="sendBtn" class="secondary-btn">Send email</button>
+          </div>
+        </details>
+
+        <div id="statusBox" class="rail-card status-card">
+          <p class="note-title">Status</p>
+          <p>Use the chat prompt for changes, then send manually or let the weekly schedule handle it.</p>
+        </div>
+      </aside>
+
+      <main class="chat-layout">
+        <section class="composer-panel">
+          <div class="panel-topline">
+            <div>
+              <p class="eyebrow">Compose</p>
+              <h2>Tell the app what you want this week</h2>
+            </div>
+            <div class="quick-pill-row">
+              <button class="quick-pill" data-prompt="Set my target to 120g and refresh the preview.">Higher protein</button>
+              <button class="quick-pill" data-prompt="Email me tomorrow's meal plan now.">Tomorrow only</button>
+              <button class="quick-pill" data-prompt="Send me tomorrow's meal plan every day at 7pm.">Daily 7pm</button>
+            </div>
+          </div>
+
+          <div class="chat-surface">
+            <div class="chat-thread">
+              <article class="message-bubble assistant-bubble">
+                <p class="bubble-role">Assistant</p>
+                <p>
+                  Try something like "Set my target to 110g and email me tomorrow's meal plan every day at 7pm."
+                </p>
+              </article>
+
+              <article class="message-bubble user-bubble">
+                <p class="bubble-role">You</p>
+                <textarea id="promptInput" rows="5" placeholder="Example: Set my target to 110g and email me tomorrow's meal plan every day at 7pm to me@example.com."></textarea>
+              </article>
+
+              <article id="promptStatus" class="message-bubble assistant-bubble result-bubble">
+                <p class="bubble-role">Assistant</p>
+                <p>When you apply a prompt, I'll summarize what changed here.</p>
+              </article>
+            </div>
+
+            <div class="composer-actions">
+              <button id="promptBtn" class="primary-btn">Apply prompt</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="viewer-panel">
+          <div class="viewer-topline">
+            <div>
+              <p class="eyebrow">Output</p>
+              <h2>What will be sent</h2>
+            </div>
+            <div class="viewer-tabs">
+              <button class="tab-btn active" data-view="messageView">Message</button>
+              <button class="tab-btn" data-view="shoppingView">Shopping</button>
+            </div>
+          </div>
+
+          <div id="messageView" class="viewer-pane active">
+            <div class="phone-frame">
+              <div class="phone-header">
+                <div class="phone-avatar">E</div>
+                <div>
+                  <p class="phone-title">Weekly Planner</p>
+                  <p class="phone-subtitle">Email preview</p>
+                </div>
+              </div>
+              <pre id="messagePreview" class="message-preview">{{ preview }}</pre>
+            </div>
+          </div>
+
+          <div id="shoppingView" class="viewer-pane">
+            <div class="shopping-panel">
+              <div class="shopping-header">
+                <h3>Weekend shopping list</h3>
+                <p>Everything combined into one clean order.</p>
+              </div>
+              <div class="shopping-list">
+                {% for item in plan.shopping_items %}
+                  <div class="shopping-item">
+                    <div class="shopping-item-copy">
+                      <div class="shopping-name">{{ item.name }}</div>
+                      <div class="shopping-meta">Protein-week staple</div>
+                    </div>
+                    <strong>{{ item.quantity }} {{ item.unit }}</strong>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const targetInput = document.getElementById("targetProtein");
+      const recipientInput = document.getElementById("recipient");
+      const previewBtn = document.getElementById("previewBtn");
+      const sendBtn = document.getElementById("sendBtn");
+      const promptBtn = document.getElementById("promptBtn");
+      const deliveryModeInput = document.getElementById("deliveryMode");
+      const customizationNotesInput = document.getElementById("customizationNotes");
+      const promptInput = document.getElementById("promptInput");
+      const promptStatus = document.getElementById("promptStatus");
+      const messagePreview = document.getElementById("messagePreview");
+      const statusBox = document.getElementById("statusBox");
+
+      function updateText(container, text) {
+        const target = container.querySelector("p:last-child");
+        if (target) {
+          target.textContent = text;
+        }
+      }
+
+      previewBtn.addEventListener("click", async () => {
+        const response = await fetch("/api/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            targetProtein: Number(targetInput.value || 100),
+            deliveryMode: deliveryModeInput.value,
+            customizationNotes: customizationNotesInput.value.trim(),
+          }),
+        });
+        const payload = await response.json();
+        messagePreview.textContent = payload.message;
+        updateText(
+          statusBox,
+          `Updated preview for ${payload.targetProtein}g/day with ${payload.shoppingItems.length} shopping items.`
+        );
+      });
+
+      sendBtn.addEventListener("click", async () => {
+        const response = await fetch("/api/send-now", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            targetProtein: Number(targetInput.value || 100),
+            recipient: recipientInput.value.trim(),
+            deliveryMode: deliveryModeInput.value,
+            customizationNotes: customizationNotesInput.value.trim(),
+          }),
+        });
+        const payload = await response.json();
+        updateText(
+          statusBox,
+          payload.ok ? "Email sent successfully." : `Send failed: ${payload.error || "Unknown error"}`
+        );
+      });
+
+      promptBtn.addEventListener("click", async () => {
+        const response = await fetch("/api/prompt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: promptInput.value.trim() }),
+        });
+        const payload = await response.json();
+        if (!payload.ok) {
+          updateText(promptStatus, payload.error || "Prompt failed.");
+          return;
+        }
+
+        targetInput.value = payload.settings.target_protein;
+        recipientInput.value = payload.settings.recipient;
+        deliveryModeInput.value = payload.settings.delivery_mode;
+        customizationNotesInput.value = payload.settings.customization_notes;
+        messagePreview.textContent = payload.message;
+
+        const unsupported = (payload.unsupportedRequests || []).length
+          ? ` Unsupported: ${payload.unsupportedRequests.join(", ")}.`
+          : "";
+        const sendText = payload.sendResult?.ok ? " Email sent." : "";
+
+        updateText(
+          promptStatus,
+          `${payload.assistantReply}${unsupported}${sendText}`
+        );
+      });
+
+      document.querySelectorAll(".quick-pill").forEach((button) => {
+        button.addEventListener("click", () => {
+          promptInput.value = button.dataset.prompt;
+          promptInput.focus();
+        });
+      });
+
+      document.querySelectorAll(".tab-btn").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll(".tab-btn").forEach((item) => item.classList.remove("active"));
+          document.querySelectorAll(".viewer-pane").forEach((pane) => pane.classList.remove("active"));
+          button.classList.add("active");
+          document.getElementById(button.dataset.view).classList.add("active");
+        });
+      });
+    </script>
+  </body>
+</html>

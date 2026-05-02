@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.avikal.proteinplanner</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>cd "$HOME/protein-planner-run" &amp;&amp; PORT=8000 "$HOME/protein-planner-run/.venv/bin/python" app.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/avikal/protein-planner-run</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/avikal/protein-planner-run/logs/launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/avikal/protein-planner-run/logs/launchd.err.log</string>
+</dict>
+</plist>
