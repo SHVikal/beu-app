@@ -3,6 +3,7 @@ import SwiftUI
 enum BeUAppTab {
     case home
     case plan
+    case journey
     case progress
     case me
 }
@@ -17,6 +18,7 @@ struct BeUTabBar: View {
             tabItem(symbol: "house.fill", title: "Home", tab: .home)
             tabItem(symbol: "sparkles", title: "Plan", tab: .plan)
             actionItem(symbol: "camera.fill", title: "Log Meal", action: onOpenMeal)
+            tabItem(symbol: "map.fill", title: "Journey", tab: .journey)
             tabItem(symbol: "chart.line.uptrend.xyaxis", title: "Progress", tab: .progress)
             tabItem(symbol: "person.crop.circle", title: "Profile", tab: .me)
         }
@@ -39,9 +41,9 @@ struct BeUTabBar: View {
         } label: {
             VStack(spacing: 6) {
                 Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
             }
             .foregroundColor(isActive ? BeUTheme.primaryText : BeUTheme.secondaryText)
             .frame(maxWidth: .infinity)
@@ -58,9 +60,9 @@ struct BeUTabBar: View {
         Button(action: action) {
             VStack(spacing: 6) {
                 Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
             }
             .foregroundColor(BeUTheme.primaryText)
             .frame(maxWidth: .infinity)

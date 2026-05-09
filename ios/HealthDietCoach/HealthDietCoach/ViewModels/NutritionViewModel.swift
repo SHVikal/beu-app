@@ -180,16 +180,20 @@ final class NutritionViewModel: ObservableObject {
     }
 
     func deleteMeal(_ meal: MealLog) {
-        mealLogService.deleteMealLog(id: meal.id, userId: userId)
+        print("[MealDelete] Delete requested:", meal.id)
+        _ = mealLogService.deleteMealLog(id: meal.id, userId: userId)
         refreshDailyProgress()
+        print("[MealDelete] Meals remaining:", todaysMeals.count)
         Task {
             do {
                 try await apiClient.deleteMealLog(id: meal.id)
                 await syncProgressFromBackend()
+                print("[MealDelete] Deleted:", meal.id)
             } catch {
                 await MainActor.run {
                     self.nutritionErrorMessage = error.localizedDescription
                 }
+                print("[MealDelete] Failed:", error.localizedDescription)
             }
         }
     }

@@ -2,6 +2,17 @@ import Foundation
 
 struct NudgeService {
     func buildNudges(plan: DailyPlan, intake: DailyIntake) -> [DailyNudge] {
+        if plan.adaptivePlan.nudges.isEmpty == false {
+            return Array(plan.adaptivePlan.nudges.prefix(3)).enumerated().map { index, nudge in
+                DailyNudge(
+                    id: "adaptive-\(index)-\(nudge.category)",
+                    tone: tone(for: nudge),
+                    message: LanguageGuard.sanitized(nudge.message),
+                    action: action(for: nudge)
+                )
+            }
+        }
+
         let proteinShort = plan.proteinTarget - intake.protein
         let kcalOver = intake.kcal - plan.kcalTarget
         let litresShort = plan.waterLitresTarget - intake.waterLitres
@@ -107,5 +118,27 @@ struct NudgeService {
         }
 
         return Array(nudges.prefix(3))
+    }
+
+    private func tone(for nudge: AdaptivePlanOutput.AdaptiveNudge) -> NudgeTone {
+        switch nudge.urgency {
+        case "high":
+            return nudge.category == "recovery" ? .soft : .alert
+        case "medium":
+            return .soft
+        default:
+            return nudge.category == "activity" ? .win : .soft
+        }
+    }
+
+    private func action(for nudge: AdaptivePlanOutput.AdaptiveNudge) -> String? {
+        switch nudge.category {
+        case "nutrition":
+            return "Log meal"
+        case "hydration":
+            return "+100 ml"
+        default:
+            return nil
+        }
     }
 }

@@ -23,6 +23,7 @@ struct DailyPlan: Codable, Equatable {
     var cardioStepsTarget: Int
     var cardioMessage: String
     var energyBalance: DailyEnergyBalance
+    var adaptivePlan: AdaptivePlanOutput
     var dietGuidance: DietGuidance
     var supplementReminders: [String]
     var healthContextNote: String?

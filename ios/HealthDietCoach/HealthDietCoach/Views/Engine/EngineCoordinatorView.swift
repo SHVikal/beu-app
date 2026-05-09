@@ -3,6 +3,26 @@ import UIKit
 
 @MainActor
 final class EngineCoordinatorModel: ObservableObject {
+    enum BackendStatus {
+        case unknown
+        case waking
+        case connected
+        case unavailable
+
+        var label: String {
+            switch self {
+            case .unknown:
+                return "Checking"
+            case .waking:
+                return "Waking up"
+            case .connected:
+                return "Connected"
+            case .unavailable:
+                return "Backend unavailable"
+            }
+        }
+    }
+
     enum Phase {
         case onboard
         case app
@@ -17,13 +37,26 @@ final class EngineCoordinatorModel: ObservableObject {
     @Published var dailyPlan: DailyPlan?
     @Published var nudges: [DailyNudge] = []
     @Published var weeklyInsights: WeeklyInsights?
+    @Published var journeySnapshot: JourneySnapshot?
+    @Published var selectedJourneyChallenge: JourneyChallenge
     @Published var intake: DailyIntake = .init(kcal: 0, protein: 0, carbs: 0, fat: 0, waterLitres: 0, steps: 0, mealsLoggedToday: 0, lastMealType: nil)
     @Published var mealsToday: [MealLog] = []
     @Published var mealsThisWeek: [MealLog] = []
+    @Published var supplementIntakeLogs: [SupplementIntakeLog] = []
     @Published var showingMealSheet = false
     @Published var mealBeingEdited: MealLog?
     @Published var isLoading = false
+    @Published var deletingMealId: String?
     @Published var errorMessage: String?
+    @Published var transientMessage: String?
+    @Published var backendStatus: BackendStatus = .unknown
+    @Published var nextBestMealResult: NextBestMealResult?
+    @Published var savedMealsForLater: [SavedMealForLater] = []
+    @Published var weeklyReview: WeeklyReview?
+    @Published var weeklyFocusChips: [String] = []
+    @Published var dailyDelta: DailyDelta?
+    @Published var showingWeeklyReview = false
+    @Published var logMealPrefill: NextBestMealSuggestion?
 
     let onboardingStore: OnboardingStore
     let goalStore: GoalStore
@@ -33,8 +66,16 @@ final class EngineCoordinatorModel: ObservableObject {
     private let planService: PlanService
     private let nudgeService: NudgeService
     private let insightsService: InsightsService
+    private let journeyService: JourneyService
     private let mealLogService: MealLogService
+    private let supplementIntakeLogRepository: SupplementIntakeLogRepository
+    private let apiClient: APIClient
+    private let nextBestMealService: NextBestMealService
+    private let weeklyReviewService: WeeklyReviewService
+    private let dailyDeltaService: DailyDeltaService
+    private let adaptiveCoachFeatureStore: AdaptiveCoachFeatureStore
     private let userId = "local-user"
+    private var lastBackendWarmupAt: Date?
 
     init() {
         let onboardingStore = OnboardingStore()
@@ -44,7 +85,14 @@ final class EngineCoordinatorModel: ObservableObject {
         let planService = PlanService()
         let nudgeService = NudgeService()
         let insightsService = InsightsService()
+        let journeyService = JourneyService()
         let mealLogService = MealLogService()
+        let supplementIntakeLogRepository = SupplementIntakeLogRepository()
+        let apiClient = APIClient()
+        let nextBestMealService = NextBestMealService()
+        let weeklyReviewService = WeeklyReviewService()
+        let dailyDeltaService = DailyDeltaService()
+        let adaptiveCoachFeatureStore = AdaptiveCoachFeatureStore()
 
         self.onboardingStore = onboardingStore
         self.goalStore = goalStore
@@ -53,9 +101,19 @@ final class EngineCoordinatorModel: ObservableObject {
         self.planService = planService
         self.nudgeService = nudgeService
         self.insightsService = insightsService
+        self.journeyService = journeyService
+        self.selectedJourneyChallenge = journeyService.selectedChallenge(for: "local-user")
         self.mealLogService = mealLogService
+        self.supplementIntakeLogRepository = supplementIntakeLogRepository
+        self.apiClient = apiClient
+        self.nextBestMealService = nextBestMealService
+        self.weeklyReviewService = weeklyReviewService
+        self.dailyDeltaService = dailyDeltaService
+        self.adaptiveCoachFeatureStore = adaptiveCoachFeatureStore
         self.baseline = onboardingStore.baseline
         self.goalConfig = goalStore.goalConfig
+        self.savedMealsForLater = adaptiveCoachFeatureStore.savedMeals(userId: "local-user")
+        self.weeklyFocusChips = adaptiveCoachFeatureStore.weeklyFocus(userId: "local-user")
         self.onboardingMode = onboardingStore.baseline == nil ? .firstRun : .reviewBaseline
         if onboardingStore.baseline == nil {
             self.phase = .onboard
@@ -64,6 +122,7 @@ final class EngineCoordinatorModel: ObservableObject {
         } else {
             self.phase = .app
         }
+        Task { await warmUpBackendIfNeeded(force: true) }
         Task { await refreshAll() }
     }
 
@@ -113,6 +172,14 @@ final class EngineCoordinatorModel: ObservableObject {
         GoalPresets[currentGoalConfig.goal]?.label ?? currentGoalConfig.goal.title
     }
 
+    var selectedDate: String {
+        Date().localYYYYMMDD
+    }
+
+    var availableJourneyChallenges: [JourneyChallenge] {
+        journeyService.challenges
+    }
+
     var currentNudges: [DailyNudge] {
         nudges
     }
@@ -145,10 +212,31 @@ final class EngineCoordinatorModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         waterStore.loadToday()
+        await warmUpBackendIfNeeded()
         await healthGateway.refresh()
+        loadSupplementIntakeLogs()
         loadMeals()
         rebuildPlan()
+        syncJourney()
         isLoading = false
+    }
+
+    func warmUpBackendIfNeeded(force: Bool = false) async {
+        if force == false,
+           let lastBackendWarmupAt,
+           Date().timeIntervalSince(lastBackendWarmupAt) < 60 {
+            return
+        }
+
+        lastBackendWarmupAt = Date()
+        backendStatus = .waking
+
+        do {
+            _ = try await apiClient.fetchHealthStatus()
+            backendStatus = .connected
+        } catch {
+            backendStatus = .unavailable
+        }
     }
 
     func saveBaseline(_ baseline: Baseline) {
@@ -198,17 +286,26 @@ final class EngineCoordinatorModel: ObservableObject {
 
     func openLogMeal() {
         mealBeingEdited = nil
+        logMealPrefill = nil
+        showingMealSheet = true
+    }
+
+    func openLogMeal(prefill suggestion: NextBestMealSuggestion) {
+        mealBeingEdited = nil
+        logMealPrefill = suggestion
         showingMealSheet = true
     }
 
     func editMeal(_ meal: MealLog) {
         mealBeingEdited = meal
+        logMealPrefill = nil
         showingMealSheet = true
     }
 
     func didSaveMeal(_ meal: MealLog) {
         mealLogService.createMealLog(meal)
         mealBeingEdited = nil
+        logMealPrefill = nil
         showingMealSheet = false
         loadMeals()
         rebuildPlan()
@@ -217,17 +314,106 @@ final class EngineCoordinatorModel: ObservableObject {
     func didUpdateMeal(_ meal: MealLog) {
         mealLogService.updateMealLog(id: meal.id, updatedMealLog: meal)
         mealBeingEdited = nil
+        logMealPrefill = nil
         loadMeals()
         rebuildPlan()
     }
 
-    func didDeleteMeal(_ meal: MealLog) {
-        mealLogService.deleteMealLog(id: meal.id, userId: meal.userId)
-        if mealBeingEdited?.id == meal.id {
+    @discardableResult
+    func didDeleteMeal(_ meal: MealLog) async -> Bool {
+        let mealId = meal.id
+        guard deletingMealId == nil else { return false }
+
+        await MainActor.run {
+            deletingMealId = mealId
+        }
+
+        print("[MealDelete] Delete requested:", mealId)
+
+        let deleted = mealLogService.deleteMealLog(id: mealId, userId: meal.userId)
+
+        await MainActor.run {
+            if mealBeingEdited?.id == mealId {
+                mealBeingEdited = nil
+            }
+            loadMeals()
+            rebuildPlan()
+            if deleted {
+                transientMessage = "Meal deleted"
+            }
+            deletingMealId = nil
+        }
+
+        if deleted {
+            print("[MealDelete] Deleted:", mealId)
+        }
+        print("[MealDelete] Meals remaining:", mealsToday.count)
+        scheduleTransientMessageClear()
+        return true
+    }
+
+    func mealDeleteFailed(_ error: Error) {
+        print("[MealDelete] Failed:", error.localizedDescription)
+        errorMessage = "Could not delete meal. Please try again."
+        deletingMealId = nil
+    }
+
+    func mealDeleteInProgress(for mealId: String) -> Bool {
+        deletingMealId == mealId
+    }
+
+    func clearMealEditingState(for mealId: String) {
+        if mealBeingEdited?.id == mealId {
             mealBeingEdited = nil
         }
-        loadMeals()
+    }
+
+    func markSupplementTaken(_ supplement: Supplement) {
+        let date = selectedDate
+        _ = supplementIntakeLogRepository.markTaken(userId: userId, supplementId: supplement.id, date: date)
+        loadSupplementIntakeLogs()
         rebuildPlan()
+    }
+
+    func undoSupplementTaken(_ supplement: Supplement) {
+        supplementIntakeLogRepository.undoTaken(userId: userId, supplementId: supplement.id, date: selectedDate)
+        loadSupplementIntakeLogs()
+        rebuildPlan()
+    }
+
+    func selectJourneyChallenge(_ challenge: JourneyChallenge) {
+        guard selectedJourneyChallenge.id != challenge.id else { return }
+        journeyService.selectChallenge(challenge.id, for: userId)
+        selectedJourneyChallenge = challenge
+        syncJourney()
+    }
+
+    func saveMealForLater(_ suggestion: NextBestMealSuggestion) {
+        savedMealsForLater = adaptiveCoachFeatureStore.saveMeal(suggestion, userId: userId)
+        transientMessage = "Saved for later"
+        scheduleTransientMessageClear()
+    }
+
+    func isMealSavedForLater(_ suggestion: NextBestMealSuggestion) -> Bool {
+        savedMealsForLater.contains {
+            $0.id == suggestion.id || $0.name.caseInsensitiveCompare(suggestion.name) == .orderedSame
+        }
+    }
+
+    func applyWeeklyFocus(_ chips: [String]) {
+        adaptiveCoachFeatureStore.saveWeeklyFocus(chips, userId: userId)
+        weeklyFocusChips = adaptiveCoachFeatureStore.weeklyFocus(userId: userId)
+        showingWeeklyReview = false
+        transientMessage = "Weekly focus saved"
+        scheduleTransientMessageClear()
+    }
+
+    func isSupplementTaken(_ supplement: Supplement) -> Bool {
+        supplementIntakeLogs.contains {
+            $0.supplementId == supplement.id &&
+            $0.date == selectedDate &&
+            $0.status == "taken"
+        }
     }
 
     private func rebuildPlan() {
@@ -250,10 +436,12 @@ final class EngineCoordinatorModel: ObservableObject {
             plan: plan,
             summaries: healthGateway.recentSummaries
         )
+        syncJourney()
+        recomputeAdaptiveCoachFeatures(plan: plan)
     }
 
     private func loadMeals() {
-        let today = ISODateOnlyFormatter.shared.string(from: Date())
+        let today = selectedDate
         mealsToday = mealLogService.mealLogs(for: userId, date: today)
         mealsThisWeek = mealLogService.mealLogs(for: userId)
         intake = DailyIntake(
@@ -265,6 +453,66 @@ final class EngineCoordinatorModel: ObservableObject {
             steps: healthGateway.currentSteps,
             mealsLoggedToday: mealsToday.count,
             lastMealType: mealsToday.sorted(by: { $0.createdAt < $1.createdAt }).last?.mealType
+        )
+    }
+
+    private func loadSupplementIntakeLogs() {
+        supplementIntakeLogs = supplementIntakeLogRepository.getLogs(userId: userId, date: selectedDate)
+    }
+
+    private func syncJourney() {
+        selectedJourneyChallenge = journeyService.selectedChallenge(for: userId)
+        journeySnapshot = journeyService.syncJourneyProgress(
+            userId: userId,
+            challengeID: selectedJourneyChallenge.id,
+            summaries: healthGateway.recentSummaries,
+            todaySummary: healthGateway.todaySummary,
+            heightCm: baseline?.heightCm,
+            dailyStepGoal: dailyPlan?.cardioStepsTarget ?? 7_500
+        )
+    }
+
+    private func recomputeAdaptiveCoachFeatures(plan: DailyPlan) {
+        let conditions = currentBaseline.medical
+            .filter { $0 != .none && $0 != .preferNotToSay }
+            .map(\.title)
+
+        let nextMealContext = NextBestMealContext(
+            calorieTarget: plan.kcalTarget,
+            proteinTargetGrams: Double(plan.proteinTarget),
+            caloriesConsumed: intake.kcal,
+            proteinConsumedGrams: Double(intake.protein),
+            mealsLoggedToday: mealsToday,
+            currentHour: Calendar.current.component(.hour, from: Date()),
+            goalType: currentGoalConfig.goal.rawValue,
+            readinessStatus: readiness.status.rawValue,
+            dietPreference: baseline?.dietPreference.apiValue,
+            healthConditions: conditions
+        )
+        nextBestMealResult = nextBestMealService.generateNextBestMeal(context: nextMealContext)
+
+        let reviewSnapshots = weekSnapshots(plan: plan)
+        weeklyReview = weeklyReviewService.generateWeeklyReview(
+            context: WeeklyReviewContext(
+                goalType: currentGoalConfig.goal.rawValue,
+                calorieTarget: plan.kcalTarget,
+                proteinTarget: plan.proteinTarget,
+                stepTarget: plan.cardioStepsTarget,
+                dailySnapshots: reviewSnapshots
+            )
+        )
+
+        dailyDelta = dailyDeltaService.getDailyDelta(
+            context: DailyDeltaContext(
+                goalType: currentGoalConfig.goal.rawValue,
+                calorieTarget: plan.kcalTarget,
+                proteinTarget: plan.proteinTarget,
+                stepTarget: plan.cardioStepsTarget,
+                today: deltaSnapshot(for: selectedDate),
+                yesterday: yesterdayDeltaSnapshot(),
+                averageSteps: averageStepsExcludingToday(),
+                averageActiveEnergy: averageActiveEnergyExcludingToday()
+            )
         )
     }
 
@@ -287,6 +535,85 @@ final class EngineCoordinatorModel: ObservableObject {
         }
     }
 
+    private func weekSnapshots(plan: DailyPlan) -> [WeeklyReviewContext.DaySnapshot] {
+        let calendar = Calendar.current
+        let readinessByDate = readinessMapForRecentSummaries()
+        return (0..<7).reversed().compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: Date()) else { return nil }
+            let key = ISODateOnlyFormatter.shared.string(from: date)
+            let meals = mealLogService.mealLogs(for: userId, date: key)
+            let summary = healthGateway.recentSummaries.first(where: { $0.date == key })
+            let readinessTuple = readinessByDate[key]
+            return WeeklyReviewContext.DaySnapshot(
+                id: key,
+                date: key,
+                caloriesConsumed: meals.reduce(0) { $0 + $1.totalCalories },
+                proteinConsumed: meals.reduce(0) { $0 + $1.totalProteinGrams },
+                steps: summary?.steps ?? (offset == 0 ? intake.steps : 0),
+                readinessScore: readinessTuple?.score,
+                readinessStatus: readinessTuple?.status,
+                mealsLogged: meals.count,
+                waterLitres: offset == 0 ? intake.waterLitres : 0
+            )
+        }
+    }
+
+    private func readinessMapForRecentSummaries() -> [String: (score: Int, status: String)] {
+        let summaries = healthGateway.recentSummaries
+        let scores = weeklyReadinessScores
+        return Dictionary(uniqueKeysWithValues: summaries.enumerated().map { index, summary in
+            let score = index < scores.count ? scores[index] : nil
+            let status: String
+            switch score ?? 0 {
+            case 80...:
+                status = "high"
+            case 60...:
+                status = "good"
+            case 45...:
+                status = "moderate"
+            default:
+                status = "low"
+            }
+            return (summary.date, (score ?? 0, status))
+        })
+    }
+
+    private func deltaSnapshot(for date: String) -> DailyDeltaContext.Snapshot {
+        let meals = mealLogService.mealLogs(for: userId, date: date)
+        let summary = healthGateway.recentSummaries.first(where: { $0.date == date })
+        let readinessTuple = date == selectedDate ? (readiness.score, readiness.status.rawValue) : readinessMapForRecentSummaries()[date]
+        return DailyDeltaContext.Snapshot(
+            caloriesConsumed: meals.reduce(0) { $0 + $1.totalCalories },
+            proteinConsumed: meals.reduce(0) { $0 + $1.totalProteinGrams },
+            steps: summary?.steps ?? (date == selectedDate ? intake.steps : 0),
+            activeEnergyBurned: summary.map { Int($0.activeEnergyKcal.rounded()) },
+            waterLitres: date == selectedDate ? intake.waterLitres : 0,
+            readinessScore: readinessTuple?.0,
+            readinessStatus: readinessTuple?.1,
+            hasWorkout: (summary?.workoutCount ?? 0) > 0 || (summary?.workoutMinutes ?? 0) >= 20
+        )
+    }
+
+    private func yesterdayDeltaSnapshot() -> DailyDeltaContext.Snapshot? {
+        let calendar = Calendar.current
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: Date()) else { return nil }
+        return deltaSnapshot(for: ISODateOnlyFormatter.shared.string(from: yesterday))
+    }
+
+    private func averageStepsExcludingToday() -> Int? {
+        let past = healthGateway.recentSummaries.filter { $0.date != selectedDate }.map(\.steps)
+        guard past.isEmpty == false else { return nil }
+        return Int((Double(past.reduce(0, +)) / Double(past.count)).rounded())
+    }
+
+    private func averageActiveEnergyExcludingToday() -> Int? {
+        let past = healthGateway.recentSummaries
+            .filter { $0.date != selectedDate }
+            .map { Int($0.activeEnergyKcal.rounded()) }
+        guard past.isEmpty == false else { return nil }
+        return Int((Double(past.reduce(0, +)) / Double(past.count)).rounded())
+    }
+
     private func average(of values: [Int]) -> Int {
         guard !values.isEmpty else { return 0 }
         return Int((Double(values.reduce(0, +)) / Double(values.count)).rounded())
@@ -298,10 +625,20 @@ final class EngineCoordinatorModel: ObservableObject {
         }
         return String(format: "%.1f", litres)
     }
+
+    private func scheduleTransientMessageClear() {
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            await MainActor.run {
+                transientMessage = nil
+            }
+        }
+    }
 }
 
 struct EngineCoordinatorView: View {
     @StateObject private var coordinator = EngineCoordinatorModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -341,6 +678,17 @@ struct EngineCoordinatorView: View {
                     BeUHomeTabView(coordinator: coordinator)
                 case .plan:
                     BeUPlanTabView(coordinator: coordinator)
+                case .journey:
+                    JourneyView(
+                        snapshot: coordinator.journeySnapshot,
+                        challenges: coordinator.availableJourneyChallenges,
+                        selectedChallenge: coordinator.selectedJourneyChallenge,
+                        isHealthConnected: coordinator.healthGateway.isConnected,
+                        onSelectChallenge: coordinator.selectJourneyChallenge,
+                        onSyncHealth: {
+                            Task { await coordinator.refreshAll() }
+                        }
+                    )
                 case .progress:
                     BeUProgressTabView(coordinator: coordinator)
                 case .me:
@@ -369,13 +717,37 @@ struct EngineCoordinatorView: View {
                 waterLitres: coordinator.intake.waterLitres,
                 waterTargetLitres: coordinator.dailyPlan?.waterLitresTarget ?? GoalPresets[coordinator.currentGoalConfig.goal]?.waterLitres ?? 2.4,
                 onLogWater: coordinator.addWater,
+                backendIsWaking: coordinator.backendStatus == .waking,
                 initialEditingMeal: coordinator.mealBeingEdited,
+                initialSuggestedDescription: coordinator.logMealPrefill?.prefillDescription,
+                initialSuggestedMealType: coordinator.logMealPrefill.flatMap { MealType(rawValue: $0.mealType) },
+                calorieTarget: coordinator.dailyPlan?.kcalTarget ?? GoalPresets[coordinator.currentGoalConfig.goal]?.kcal ?? 1700,
+                proteinTarget: coordinator.dailyPlan?.proteinTarget ?? GoalPresets[coordinator.currentGoalConfig.goal]?.protein ?? 120,
+                currentCaloriesConsumed: coordinator.intake.kcal,
+                currentProteinConsumed: Double(coordinator.intake.protein),
+                goalType: coordinator.currentGoalConfig.goal.rawValue,
+                healthConditions: coordinator.currentBaseline.medical
+                    .filter { $0 != .none && $0 != .preferNotToSay }
+                    .map(\.title),
                 onSave: coordinator.didSaveMeal,
                 onUpdate: coordinator.didUpdateMeal,
                 onDelete: coordinator.didDeleteMeal
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $coordinator.showingWeeklyReview) {
+            if let review = coordinator.weeklyReview {
+                WeeklyReviewView(
+                    review: review,
+                    appliedFocusChips: coordinator.weeklyFocusChips,
+                    onUseFocus: {
+                        coordinator.applyWeeklyFocus(review.recommendationChips)
+                    }
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+            }
         }
         .overlay {
             if coordinator.isLoading {
@@ -385,9 +757,27 @@ struct EngineCoordinatorView: View {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .fill(BeUTheme.cardBackground)
                     )
+            } else if let transientMessage = coordinator.transientMessage {
+                VStack {
+                    Spacer()
+                    Text(transientMessage)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(BeUTheme.primaryText)
+                        )
+                        .padding(.bottom, 110)
+                }
             }
         }
         .task { await coordinator.refreshAll() }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            Task { await coordinator.warmUpBackendIfNeeded(force: true) }
+        }
     }
 }
 
@@ -418,6 +808,9 @@ private struct BeUHomeTabView: View {
                 }
 
                 todayPlanCard
+                if let preview = coordinator.nextBestMealResult?.primary {
+                    nextBestMealPreview(preview)
+                }
                 weeklySnapshot
             }
             .padding(.horizontal, 16)
@@ -508,11 +901,17 @@ private struct BeUHomeTabView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     BeUKicker(text: "Today's plan")
                     if let plan = coordinator.dailyPlan {
-                        compactPlanRow(icon: "fork.knife", title: "Diet", value: compactDietFocus(from: plan))
-                        compactPlanRow(icon: "dumbbell.fill", title: "Strength", value: strengthHomeSummary(plan))
-                        compactPlanRow(icon: "figure.walk", title: "Cardio", value: cardioHomeSummary(plan))
+                        compactPlanRow(icon: "fork.knife", title: "Diet", value: plan.adaptivePlan.mealGuidance.dietFocus)
+                        compactPlanRow(icon: "dumbbell.fill", title: "Strength", value: homeStrengthSummary(plan))
+                        compactPlanRow(icon: "figure.walk", title: "Cardio", value: homeCardioSummary(plan))
                         compactPlanRow(icon: "drop.fill", title: "Water", value: String(format: "%.1fL", plan.waterLitresTarget))
                         compactPlanRow(icon: "moon.stars.fill", title: "Sleep", value: String(format: "%.1fh", coordinator.currentSignals.sleepTarget))
+                        if let action = plan.adaptivePlan.nextBestActions.first {
+                            compactPlanRow(icon: "sparkles", title: "Next", value: action.title)
+                        }
+                        if let delta = coordinator.dailyDelta {
+                            compactPlanRow(icon: "arrow.triangle.branch", title: "Changed", value: delta.homePreview)
+                        }
                     }
                 }
             }
@@ -522,7 +921,7 @@ private struct BeUHomeTabView: View {
 
     private var weeklySnapshot: some View {
         Button {
-            coordinator.selectedTab = .progress
+            coordinator.showingWeeklyReview = true
         } label: {
             BeUCard {
                 HStack {
@@ -536,6 +935,31 @@ private struct BeUHomeTabView: View {
                     Spacer()
                     Text("This week ›")
                         .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundColor(BeUTheme.secondaryText)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func nextBestMealPreview(_ suggestion: NextBestMealSuggestion) -> some View {
+        Button {
+            coordinator.selectedTab = .plan
+        } label: {
+            BeUCard {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        BeUKicker(text: "Next best meal")
+                        Text(suggestion.name)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(BeUTheme.primaryText)
+                        Text("~\(suggestion.estimatedCalories) kcal · ~\(Int(suggestion.estimatedProteinGrams.rounded()))g protein")
+                            .font(BeUTheme.helperFont)
+                            .foregroundColor(BeUTheme.secondaryText)
+                    }
+                    Spacer()
+                    Text("Plan ›")
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(BeUTheme.secondaryText)
                 }
             }
@@ -665,27 +1089,33 @@ private struct BeUHomeTabView: View {
         }
     }
 
-    private func compactDietFocus(from plan: DailyPlan) -> String {
-        plan.dietGuidance.dietPriority.replacingOccurrences(of: " meals", with: "")
-    }
-
-    private func strengthHomeSummary(_ plan: DailyPlan) -> String {
-        if plan.strength.kind == .rest {
-            return "20 min recovery"
+    private func homeStrengthSummary(_ plan: DailyPlan) -> String {
+        let advice = plan.adaptivePlan.strengthAdvice
+        if advice.durationMinutes <= 0 {
+            return advice.recommendation
         }
-        return "\(plan.strength.durationMinutes) min \(plan.strength.intensity.lowercased())"
+        return "\(advice.durationMinutes) min \(advice.intensity.lowercased())"
     }
 
-    private func cardioHomeSummary(_ plan: DailyPlan) -> String {
-        let remaining = max(plan.cardioStepsTarget - coordinator.intake.steps, 0)
-        return remaining > 0 ? "\(remaining) steps left" : "Light walk"
+    private func homeCardioSummary(_ plan: DailyPlan) -> String {
+        let advice = plan.adaptivePlan.activityAdvice
+        if advice.stepsRemaining > 0, advice.cardioRecommendation == "Extra cardio is optional." {
+            return advice.cardioRecommendation
+        }
+        if advice.stepsRemaining > 0 {
+            return advice.cardioRecommendation
+        }
+        return "Light walk"
     }
 }
 
 private struct BeUPlanTabView: View {
     @ObservedObject var coordinator: EngineCoordinatorModel
     @State private var isWhyExpanded = false
-    @State private var takenSupplements: Set<String> = []
+    @State private var pendingDeleteMeal: MealLog?
+    @State private var showingAlternatives = false
+    @State private var showingDeltaDetail = false
+    private let mealQualityService = MealQualityService()
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -694,6 +1124,15 @@ private struct BeUPlanTabView: View {
 
                 if let plan = coordinator.dailyPlan {
                     intakeBurnSection(plan)
+                    adaptiveCoachSection(plan)
+                    if let nextBest = coordinator.nextBestMealResult?.primary {
+                        nextBestMealSection(nextBest)
+                    }
+                    if let dailyDelta = coordinator.dailyDelta {
+                        WhatChangedTodayCard(delta: dailyDelta) {
+                            showingDeltaDetail = true
+                        }
+                    }
                     waterSection(plan)
                     trainingSection(plan)
 
@@ -710,6 +1149,51 @@ private struct BeUPlanTabView: View {
             .padding(.horizontal, 16)
             .padding(.top, 16)
             .padding(.bottom, 150)
+        }
+        .confirmationDialog(
+            "Delete meal?",
+            isPresented: Binding(
+                get: { pendingDeleteMeal != nil },
+                set: { if !$0 { pendingDeleteMeal = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                guard let pendingDeleteMeal else { return }
+                Task {
+                    _ = await coordinator.didDeleteMeal(pendingDeleteMeal)
+                    await MainActor.run {
+                        self.pendingDeleteMeal = nil
+                    }
+                }
+            }
+            .disabled(coordinator.deletingMealId != nil)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove the meal and update your daily calories and macros.")
+        }
+        .sheet(isPresented: $showingAlternatives) {
+            if let result = coordinator.nextBestMealResult, let primary = result.primary {
+                MealAlternativesSheet(
+                    primaryMeal: primary.name,
+                    alternates: result.alternates,
+                    savedMeals: coordinator.savedMealsForLater,
+                    onLog: { suggestion in
+                        showingAlternatives = false
+                        coordinator.openLogMeal(prefill: suggestion)
+                    },
+                    onSave: coordinator.saveMealForLater
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            }
+        }
+        .sheet(isPresented: $showingDeltaDetail) {
+            if let delta = coordinator.dailyDelta {
+                WhyThisChangedSheet(delta: delta)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
         }
     }
 
@@ -760,18 +1244,78 @@ private struct BeUPlanTabView: View {
         }
     }
 
+    private func adaptiveCoachSection(_ plan: DailyPlan) -> some View {
+        planSection(title: "Adaptive Coach Update") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(adaptivePlanModeMessage(plan))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(BeUTheme.primaryText)
+                if let action = plan.adaptivePlan.nextBestActions.first {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("Next best action:")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(BeUTheme.secondaryText)
+                        Text(action.title)
+                            .font(.system(size: 13))
+                            .foregroundColor(BeUTheme.primaryText)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(plan.adaptivePlan.nudges.prefix(3))) { nudge in
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle()
+                                .fill(BeUTheme.accent)
+                                .frame(width: 5, height: 5)
+                                .padding(.top, 6)
+                            Text(nudge.message)
+                                .font(BeUTheme.helperFont)
+                                .foregroundColor(BeUTheme.secondaryText)
+                        }
+                    }
+                }
+                if coordinator.weeklyFocusChips.isEmpty == false {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("This week’s focus")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(BeUTheme.secondaryText)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8, alignment: .leading)], alignment: .leading, spacing: 8) {
+                            ForEach(coordinator.weeklyFocusChips, id: \.self) { chip in
+                                Text(chip)
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundColor(BeUTheme.primaryText)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(Capsule(style: .continuous).fill(BeUTheme.accent.opacity(0.14)))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func nextBestMealSection(_ suggestion: NextBestMealSuggestion) -> some View {
+        NextBestMealCard(
+            suggestion: suggestion,
+            isSaved: coordinator.isMealSavedForLater(suggestion),
+            onLog: { coordinator.openLogMeal(prefill: suggestion) },
+            onSave: { coordinator.saveMealForLater(suggestion) },
+            onAlternatives: { showingAlternatives = true }
+        )
+    }
+
     private func trainingSection(_ plan: DailyPlan) -> some View {
         planSection(title: "Today's Training") {
             VStack(spacing: 12) {
                 activityCard(
                     icon: "dumbbell.fill",
-                    title: strengthPlanTitle(plan),
-                    subtitle: strengthPlanSubtitle(plan)
+                    title: adaptiveStrengthTitle(plan),
+                    subtitle: adaptiveStrengthSubtitle(plan)
                 )
                 activityCard(
                     icon: "figure.walk",
-                    title: cardioPlanTitle(plan),
-                    subtitle: cardioPlanSubtitle(plan)
+                    title: adaptiveCardioTitle(plan),
+                    subtitle: adaptiveCardioSubtitle(plan)
                 )
             }
         }
@@ -813,7 +1357,7 @@ private struct BeUPlanTabView: View {
         let guidance = plan.dietGuidance
         return planSection(title: "Meal ideas for today") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Based on your goal, targets, readiness, and what you’ve logged today.")
+                Text(plan.adaptivePlan.mealGuidance.nextMealStrategy)
                     .font(BeUTheme.helperFont)
                     .foregroundColor(BeUTheme.secondaryText)
                 mealTypeSection(.breakfast, suggestions: Array(guidance.mealSuggestionsByType.breakfast.prefix(2)))
@@ -854,6 +1398,9 @@ private struct BeUPlanTabView: View {
                         .font(BeUTheme.helperFont)
                         .foregroundColor(BeUTheme.secondaryText)
                 }
+                Text(plan.adaptivePlan.mealGuidance.dietFocus)
+                    .font(BeUTheme.helperFont)
+                    .foregroundColor(BeUTheme.secondaryText)
             }
         }
     }
@@ -888,12 +1435,15 @@ private struct BeUPlanTabView: View {
                                     .foregroundColor(BeUTheme.secondaryText)
                             }
                             Spacer()
-                            Button(takenSupplements.contains(supplement.id) ? "Taken" : "Mark taken") {
-                                takenSupplements.insert(supplement.id)
+                            Button(coordinator.isSupplementTaken(supplement) ? "Undo" : "Mark taken") {
+                                if coordinator.isSupplementTaken(supplement) {
+                                    coordinator.undoSupplementTaken(supplement)
+                                } else {
+                                    coordinator.markSupplementTaken(supplement)
+                                }
                             }
-                            .disabled(takenSupplements.contains(supplement.id))
                             .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundColor(takenSupplements.contains(supplement.id) ? BeUTheme.tertiaryText : BeUTheme.primaryText)
+                            .foregroundColor(coordinator.isSupplementTaken(supplement) ? BeUTheme.tertiaryText : BeUTheme.primaryText)
                             .buttonStyle(.plain)
                         }
                     }
@@ -953,53 +1503,36 @@ private struct BeUPlanTabView: View {
                 }
             } else {
                 ForEach(loggedMeals) { meal in
-                    loggedMealCard(meal)
+                    loggedMealCard(meal, plan: coordinator.dailyPlan)
                 }
             }
         }
     }
 
-    private func loggedMealCard(_ meal: MealLog) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Logged")
-                        .font(BeUTheme.helperFont.weight(.semibold))
-                        .foregroundColor(BeUTheme.secondaryText)
-                    Text(mealSummary(meal))
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(BeUTheme.primaryText)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("\(meal.totalCalories) kcal")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundColor(BeUTheme.primaryText)
-                    Text("\(Int(meal.totalProteinGrams.rounded()))g protein")
-                        .font(BeUTheme.helperFont)
-                        .foregroundColor(BeUTheme.secondaryText)
-                }
-            }
-
-            HStack(spacing: 12) {
-                Button("Edit") { coordinator.editMeal(meal) }
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundColor(BeUTheme.primaryText)
-                    .buttonStyle(.plain)
-                Button("Delete") { coordinator.didDeleteMeal(meal) }
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundColor(BeUTheme.alert)
-                    .buttonStyle(.plain)
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(BeUTheme.cardAltBackground)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(BeUTheme.hairline, lineWidth: 0.5)
+    private func loggedMealCard(_ meal: MealLog, plan: DailyPlan?) -> some View {
+        let quality = plan.map {
+            mealQualityService.scoreMeal(
+                items: meal.items,
+                context: MealQualityContext(
+                    mealType: meal.mealType,
+                    goalType: coordinator.currentGoalConfig.goal.rawValue,
+                    calorieTarget: $0.kcalTarget,
+                    proteinTarget: $0.proteinTarget,
+                    caloriesRemaining: nil,
+                    proteinRemaining: nil,
+                    healthConditions: coordinator.currentBaseline.medical
+                        .filter { $0 != .none && $0 != .preferNotToSay }
+                        .map(\.title)
                 )
+            )
+        } ?? nil
+
+        return LoggedMealCardView(
+            meal: meal,
+            quality: quality,
+            onEdit: { coordinator.editMeal(meal) },
+            onDelete: { pendingDeleteMeal = meal },
+            isDeleting: coordinator.deletingMealId == meal.id
         )
     }
 
@@ -1085,55 +1618,50 @@ private struct BeUPlanTabView: View {
         return "Small sip break"
     }
 
-    private func strengthPlanTitle(_ plan: DailyPlan) -> String {
-        if plan.strength.kind == .rest {
-            return "Light mobility / recovery strength"
+    private func adaptivePlanModeMessage(_ plan: DailyPlan) -> String {
+        switch plan.adaptivePlan.planMode {
+        case "activity_ahead":
+            return "Activity is ahead today. Keep calories steady and focus on protein."
+        case "activity_behind":
+            return "Movement is behind for the time of day. Use a practical walk to course-correct."
+        case "protein_behind":
+            return "Protein is behind today. Keep the next meal protein-led."
+        case "calories_tight":
+            return "Calories are tight, so the rest of the day should stay lean and efficient."
+        case "recovery_first":
+            return "Recovery is lower today. Keep the day balanced and avoid chasing burn."
+        case "refuel_needed":
+            return "You trained today. Keep calories steady and make the next meal protein-led."
+        default:
+            return "You’re broadly on track. Stay steady with meals, movement, and recovery."
         }
-        let burn = estimatedStrengthBurn(plan)
-        return "\(plan.strength.durationMinutes) min · \(plan.strength.intensity)"
-            + " · approx. \(burn) kcal"
     }
 
-    private func strengthPlanSubtitle(_ plan: DailyPlan) -> String {
-        if plan.strength.kind == .rest {
-            return "Focus: Recovery · approx. 60 kcal burn"
+    private func adaptiveStrengthTitle(_ plan: DailyPlan) -> String {
+        let advice = plan.adaptivePlan.strengthAdvice
+        if advice.durationMinutes <= 0 {
+            return advice.recommendation
         }
-        return "Focus: \(strengthFocus(plan))"
+        let burn = advice.estimatedBurnKcal.map { " · approx. \($0) kcal" } ?? ""
+        return "\(advice.durationMinutes) min · \(advice.intensity.capitalized)\(burn)"
     }
 
-    private func cardioPlanTitle(_ plan: DailyPlan) -> String {
-        let burn = estimatedCardioBurn(plan)
-        if plan.energyBalance.remainingBurnTarget <= 0 {
-            return "10–15 min light walk · approx. \(burn) kcal"
+    private func adaptiveStrengthSubtitle(_ plan: DailyPlan) -> String {
+        plan.adaptivePlan.strengthAdvice.message
+    }
+
+    private func adaptiveCardioTitle(_ plan: DailyPlan) -> String {
+        let advice = plan.adaptivePlan.activityAdvice
+        let burn = advice.estimatedCardioBurnKcal.map { " · approx. \($0) kcal" } ?? ""
+        return advice.cardioRecommendation + burn
+    }
+
+    private func adaptiveCardioSubtitle(_ plan: DailyPlan) -> String {
+        let advice = plan.adaptivePlan.activityAdvice
+        if advice.stepsRemaining > 0 {
+            return "\(advice.stepsRemaining) steps remaining"
         }
-        return "\(cardioDuration(plan)) min easy walk · approx. \(burn) kcal"
-    }
-
-    private func cardioPlanSubtitle(_ plan: DailyPlan) -> String {
-        let remaining = max(plan.cardioStepsTarget - coordinator.intake.steps, 0)
-        if plan.energyBalance.remainingBurnTarget <= 0 {
-            return "Keep it easy, burn target is already met."
-        }
-        return "\(remaining) steps remaining"
-    }
-
-    private func estimatedStrengthBurn(_ plan: DailyPlan) -> Int {
-        if plan.strength.kind == .rest { return 60 }
-        let multiplier = plan.strength.intensity.lowercased().contains("moderate") ? 5 : 4
-        return plan.strength.durationMinutes * multiplier
-    }
-
-    private func estimatedCardioBurn(_ plan: DailyPlan) -> Int {
-        plan.energyBalance.remainingBurnTarget <= 0 ? 50 : min(max(plan.energyBalance.remainingBurnTarget / 2, 80), 140)
-    }
-
-    private func cardioDuration(_ plan: DailyPlan) -> Int {
-        plan.energyBalance.remainingBurnTarget > 250 ? 25 : 20
-    }
-
-    private func strengthFocus(_ plan: DailyPlan) -> String {
-        if plan.strength.kind == .rest { return "Recovery" }
-        return plan.strength.intensity.lowercased().contains("light") ? "Mobility" : "Full body"
+        return advice.message
     }
 
     private func conciseHealthNote(_ plan: DailyPlan) -> String? {
@@ -1159,7 +1687,7 @@ private struct BeUPlanTabView: View {
     }
 
     private func supplementStatus(for supplement: Supplement) -> String {
-        if takenSupplements.contains(supplement.id) { return "Taken" }
+        if coordinator.isSupplementTaken(supplement) { return "Taken" }
         if let time = supplement.timeOfDay, time == currentTimeBand() || time == .withMeal {
             return "Due today"
         }
@@ -1224,6 +1752,27 @@ private struct BeUProgressTabView: View {
                 tabHeader(kicker: "Progress", title: "Weekly")
 
                 readinessBarChartCard
+
+                if coordinator.weeklyReview != nil {
+                    BeUCard {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 6) {
+                                BeUKicker(text: "Weekly review")
+                                Text("View weekly review")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(BeUTheme.primaryText)
+                                Text("See hit days, focus areas, and next-week adjustments.")
+                                    .font(BeUTheme.helperFont)
+                                    .foregroundColor(BeUTheme.secondaryText)
+                            }
+                            Spacer()
+                            Button("Open") {
+                                coordinator.showingWeeklyReview = true
+                            }
+                            .buttonStyle(BeUSecondaryButtonStyle())
+                        }
+                    }
+                }
 
                 if let energy = coordinator.weeklyInsights?.weeklyEnergySummary {
                     BeUCard {
@@ -1450,6 +1999,8 @@ private struct BeUMeTabView: View {
             BeUCard {
                 VStack(spacing: 14) {
                     meRow("Apple Health", coordinator.healthGateway.isConnected ? "Connected" : "Prototype data")
+                    Divider().overlay(BeUTheme.hairline)
+                    meRow("Backend", coordinator.backendStatus.label)
                     Divider().overlay(BeUTheme.hairline)
                     meRow("Last synced", coordinator.healthGateway.lastSyncLabel)
                 }

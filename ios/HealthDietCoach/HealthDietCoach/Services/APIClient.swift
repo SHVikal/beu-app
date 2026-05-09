@@ -28,11 +28,15 @@ final class APIClient {
     private let decoder = JSONDecoder()
 
     init(baseURLString: String? = nil, session: URLSession = .shared) {
-        let resolvedBaseURLString = baseURLString ?? Self.defaultBaseURLString
+        let resolvedBaseURLString = baseURLString ?? APIConfig.baseURLString
         self.baseURL = URL(string: resolvedBaseURLString) ?? URL(fileURLWithPath: "/")
         self.session = session
         self.encoder.dateEncodingStrategy = .iso8601
         self.decoder.dateDecodingStrategy = .iso8601
+    }
+
+    func fetchHealthStatus() async throws -> BackendHealthStatus {
+        try await request(path: "/health", method: "GET", responseType: BackendHealthStatus.self)
     }
 
     func save(summary: HealthSummary) async throws -> HealthSummary {
@@ -112,17 +116,29 @@ final class APIClient {
             let dietPreference: String
         }
 
-        return try await send(
+        let requestBody = RequestBody(
+            userId: userId,
+            description: description,
+            mealType: mealType,
+            dietPreference: dietPreference
+        )
+        let url = baseURL.appending(path: "/api/food/analyze-text")
+        print("[TextMeal] URL:", url.absoluteString)
+        print("[TextMeal] Description:", description)
+        if let encoded = try? encoder.encode(requestBody),
+           let json = String(data: encoded, encoding: .utf8) {
+            print("[TextMeal] Request body:", json)
+        }
+
+        let analysis = try await send(
             path: "/api/food/analyze-text",
             method: "POST",
-            body: RequestBody(
-                userId: userId,
-                description: description,
-                mealType: mealType,
-                dietPreference: dietPreference
-            ),
+            body: requestBody,
             responseType: FoodImageAnalysis.self
         )
+        print("[TextMeal] Parsed detected items:", analysis.detectedItems.count)
+        print("[TextMeal] Parsed total calories:", analysis.totalCalories)
+        return analysis
     }
 
     func updateFoodAnalysis(analysisId: String, userId: String, imageLocalPath: String?, items: [DetectedFoodItem]) async throws -> FoodImageAnalysis {
@@ -277,11 +293,17 @@ final class APIClient {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
-            throw APIError.server("Could not reach backend at \(baseURL.absoluteString). Make sure the backend is running, both devices are on the same Wi-Fi, and the configured port is reachable.")
+            throw APIError.server("Could not reach backend at \(baseURL.absoluteString). Check that the deployed backend URL is correct and the service is online.")
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
+        }
+
+        if request.url?.path == "/api/food/analyze-text" {
+            print("[TextMeal] HTTP status:", httpResponse.statusCode)
+            let rawResponse = String(data: data, encoding: .utf8) ?? "<non-utf8 response>"
+            print("[TextMeal] Raw response:", rawResponse)
         }
 
         guard 200..<300 ~= httpResponse.statusCode else {
@@ -315,19 +337,6 @@ final class APIClient {
             throw APIError.decoding("Backend response could not be decoded for \(request.url?.path ?? "request").")
         }
     }
-
-    private static let defaultBaseURLString: String = {
-        if let configured = Bundle.main.object(forInfoDictionaryKey: "BackendBaseURL") as? String,
-           !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return configured
-        }
-
-        #if targetEnvironment(simulator)
-        return "http://localhost:3000"
-        #else
-        return "http://192.168.1.107:3000"
-        #endif
-    }()
 
     private func makeMultipartBody(
         boundary: String,
@@ -367,6 +376,12 @@ final class APIClient {
 
         throw APIError.server("The selected photo is too large to upload. Please choose a smaller image.")
     }
+}
+
+struct BackendHealthStatus: Codable {
+    let status: String
+    let service: String
+    let timestamp: String
 }
 
 private struct EmptyResponse: Codable {

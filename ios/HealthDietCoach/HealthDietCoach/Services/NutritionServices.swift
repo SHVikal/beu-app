@@ -401,9 +401,15 @@ final class MealLogService {
         return filtered.sorted { $0.createdAt < $1.createdAt }
     }
 
-    func deleteMealLog(id: String, userId: String) {
-        let updated = mealLogs(for: userId).filter { $0.id != id }
+    @discardableResult
+    func deleteMealLog(id: String, userId: String) -> Bool {
+        let currentLogs = mealLogs(for: userId)
+        let updated = currentLogs.filter { $0.id != id }
+        guard updated.count != currentLogs.count else {
+            return false
+        }
         persist(logs: updated, userId: userId)
+        return true
     }
 
     func recalculateMealTotals(items: [DetectedFoodItem]) -> NutritionMacroTotals {
@@ -486,6 +492,64 @@ final class MealLogService {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         return folder
+    }
+}
+
+final class SupplementIntakeLogRepository {
+    private let userDefaults: UserDefaults
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+    }
+
+    func getLogs(userId: String, date: String) -> [SupplementIntakeLog] {
+        logs(for: userId).filter { $0.date == date }
+    }
+
+    func markTaken(userId: String, supplementId: String, date: String) -> SupplementIntakeLog {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let log = SupplementIntakeLog(
+            id: SupplementIntakeLog.makeID(userId: userId, supplementId: supplementId, date: date),
+            userId: userId,
+            supplementId: supplementId,
+            date: date,
+            takenAt: now,
+            status: "taken",
+            createdAt: now,
+            updatedAt: now
+        )
+
+        var existing = logs(for: userId)
+        existing.removeAll { $0.supplementId == supplementId && $0.date == date }
+        existing.append(log)
+        persist(existing, userId: userId)
+        return log
+    }
+
+    func undoTaken(userId: String, supplementId: String, date: String) {
+        var existing = logs(for: userId)
+        existing.removeAll { $0.supplementId == supplementId && $0.date == date }
+        persist(existing, userId: userId)
+    }
+
+    private func logs(for userId: String) -> [SupplementIntakeLog] {
+        guard let data = userDefaults.data(forKey: storageKey(for: userId)),
+              let logs = try? decoder.decode([SupplementIntakeLog].self, from: data) else {
+            return []
+        }
+        return logs.sorted { $0.takenAt < $1.takenAt }
+    }
+
+    private func persist(_ logs: [SupplementIntakeLog], userId: String) {
+        if let data = try? encoder.encode(logs) {
+            userDefaults.set(data, forKey: storageKey(for: userId))
+        }
+    }
+
+    private func storageKey(for userId: String) -> String {
+        "supplementIntakeLogs_\(userId)"
     }
 }
 

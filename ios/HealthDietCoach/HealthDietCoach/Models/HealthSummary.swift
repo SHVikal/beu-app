@@ -272,6 +272,21 @@ struct Supplement: Identifiable, Codable, Equatable {
     var updatedAt: Date
 }
 
+struct SupplementIntakeLog: Identifiable, Codable, Equatable {
+    let id: String
+    let userId: String
+    let supplementId: String
+    let date: String
+    let takenAt: String
+    let status: String
+    let createdAt: String
+    let updatedAt: String
+
+    static func makeID(userId: String, supplementId: String, date: String) -> String {
+        "\(userId)-\(supplementId)-\(date)"
+    }
+}
+
 struct HealthCondition: Identifiable, Codable, Equatable {
     let id: String
     let userId: String
@@ -367,6 +382,57 @@ struct DetectedFoodItem: Codable, Identifiable, Hashable {
     var carbsGrams: Double
     var fatGrams: Double
     var userConfirmed: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case estimatedPortion
+        case quantityGrams
+        case confidence
+        case calories
+        case proteinGrams
+        case carbsGrams
+        case fatGrams
+        case userConfirmed
+    }
+
+    init(
+        id: String,
+        name: String,
+        estimatedPortion: String,
+        quantityGrams: Double?,
+        confidence: String,
+        calories: Int,
+        proteinGrams: Double,
+        carbsGrams: Double,
+        fatGrams: Double,
+        userConfirmed: Bool
+    ) {
+        self.id = id
+        self.name = name
+        self.estimatedPortion = estimatedPortion
+        self.quantityGrams = quantityGrams
+        self.confidence = confidence
+        self.calories = calories
+        self.proteinGrams = proteinGrams
+        self.carbsGrams = carbsGrams
+        self.fatGrams = fatGrams
+        self.userConfirmed = userConfirmed
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        estimatedPortion = try container.decode(String.self, forKey: .estimatedPortion)
+        quantityGrams = try container.decodeFlexibleDoubleIfPresent(forKey: .quantityGrams)
+        confidence = try container.decodeIfPresent(String.self, forKey: .confidence) ?? "medium"
+        calories = try container.decodeFlexibleInt(forKey: .calories)
+        proteinGrams = try container.decodeFlexibleDouble(forKey: .proteinGrams)
+        carbsGrams = try container.decodeFlexibleDouble(forKey: .carbsGrams)
+        fatGrams = try container.decodeFlexibleDouble(forKey: .fatGrams)
+        userConfirmed = try container.decodeIfPresent(Bool.self, forKey: .userConfirmed) ?? false
+    }
 }
 
 struct FoodImageAnalysis: Codable, Identifiable {
@@ -445,10 +511,10 @@ struct FoodImageAnalysis: Codable, Identifiable {
         imageLocalPath = try container.decodeIfPresent(String.self, forKey: .imageLocalPath)
         imageRemoteUrl = try container.decodeIfPresent(String.self, forKey: .imageRemoteUrl)
         detectedItems = try container.decode([DetectedFoodItem].self, forKey: .detectedItems)
-        totalCalories = try container.decode(Int.self, forKey: .totalCalories)
-        totalProteinGrams = try container.decode(Double.self, forKey: .totalProteinGrams)
-        totalCarbsGrams = try container.decode(Double.self, forKey: .totalCarbsGrams)
-        totalFatGrams = try container.decode(Double.self, forKey: .totalFatGrams)
+        totalCalories = try container.decodeFlexibleInt(forKey: .totalCalories)
+        totalProteinGrams = try container.decodeFlexibleDouble(forKey: .totalProteinGrams)
+        totalCarbsGrams = try container.decodeFlexibleDouble(forKey: .totalCarbsGrams)
+        totalFatGrams = try container.decodeFlexibleDouble(forKey: .totalFatGrams)
         confidence = try container.decode(String.self, forKey: .confidence)
         notes = try container.decodeIfPresent([String].self, forKey: .notes) ?? []
         createdAt = try container.decode(String.self, forKey: .createdAt)
@@ -470,6 +536,46 @@ struct FoodImageAnalysis: Codable, Identifiable {
         try container.encode(confidence, forKey: .confidence)
         try container.encode(notes, forKey: .notes)
         try container.encode(createdAt, forKey: .createdAt)
+    }
+}
+
+private extension KeyedDecodingContainer {
+    func decodeFlexibleDouble(forKey key: Key) throws -> Double {
+        if let doubleValue = try decodeIfPresent(Double.self, forKey: key) {
+            return doubleValue
+        }
+        if let intValue = try decodeIfPresent(Int.self, forKey: key) {
+            return Double(intValue)
+        }
+        if let stringValue = try decodeIfPresent(String.self, forKey: key),
+           let doubleValue = Double(stringValue) {
+            return doubleValue
+        }
+        throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Expected a numeric value for \(key.stringValue).")
+    }
+
+    func decodeFlexibleDoubleIfPresent(forKey key: Key) throws -> Double? {
+        if contains(key) == false {
+            return nil
+        }
+        if try decodeNil(forKey: key) {
+            return nil
+        }
+        return try decodeFlexibleDouble(forKey: key)
+    }
+
+    func decodeFlexibleInt(forKey key: Key) throws -> Int {
+        if let intValue = try decodeIfPresent(Int.self, forKey: key) {
+            return intValue
+        }
+        if let doubleValue = try decodeIfPresent(Double.self, forKey: key) {
+            return Int(doubleValue.rounded())
+        }
+        if let stringValue = try decodeIfPresent(String.self, forKey: key),
+           let doubleValue = Double(stringValue) {
+            return Int(doubleValue.rounded())
+        }
+        throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Expected an integer value for \(key.stringValue).")
     }
 }
 
@@ -575,6 +681,12 @@ struct MealLog: Codable, Identifiable, Equatable {
         guard let date = formatter.date(from: isoDate) else { return "Unknown" }
         formatter.dateFormat = "EEEE"
         return formatter.string(from: date)
+    }
+}
+
+extension Date {
+    var localYYYYMMDD: String {
+        ISODateOnlyFormatter.shared.string(from: self)
     }
 }
 

@@ -134,6 +134,8 @@ struct DashboardView: View {
             homeTab
         case .plan:
             planTab
+        case .journey:
+            progressTab
         case .progress:
             progressTab
         case .me:

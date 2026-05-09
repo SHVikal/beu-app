@@ -18,10 +18,19 @@ struct BeULogMealSheet: View {
     let waterLitres: Double
     let waterTargetLitres: Double
     let onLogWater: () -> Bool
+    var backendIsWaking: Bool = false
     var initialEditingMeal: MealLog? = nil
+    var initialSuggestedDescription: String? = nil
+    var initialSuggestedMealType: MealType? = nil
+    var calorieTarget: Int = 1700
+    var proteinTarget: Int = 120
+    var currentCaloriesConsumed: Int = 0
+    var currentProteinConsumed: Double = 0
+    var goalType: String = Goal.fatLoss.rawValue
+    var healthConditions: [String] = []
     let onSave: (MealLog) -> Void
     let onUpdate: (MealLog) -> Void
-    let onDelete: (MealLog) -> Void
+    let onDelete: (MealLog) async -> Bool
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var mealLoggingViewModel = MealLoggingViewModel()
@@ -36,13 +45,15 @@ struct BeULogMealSheet: View {
     @State private var displayedMeals: [MealLog] = []
     @State private var editingMeal: MealLog?
     @State private var pendingDeleteMeal: MealLog?
+    @State private var isDeletingMeal = false
     @State private var errorMessage: String?
+    @State private var successMessage: String?
     @State private var loadingMessage = "Estimating your meal..."
 
     private let analysisService = RealFoodImageAnalysisService()
-    private let fallbackImageAnalysisService = MockFoodImageAnalysisService()
     private let totalsService = NutritionLookupService()
     private let mealLogService = MealLogService()
+    private let mealQualityService = MealQualityService()
 
     var body: some View {
         NavigationStack {
@@ -119,6 +130,12 @@ struct BeULogMealSheet: View {
             displayedMeals = sortedMeals(existingMeals)
             if let initialEditingMeal, editingMeal?.id != initialEditingMeal.id {
                 beginEditing(initialEditingMeal)
+            } else if let initialSuggestedDescription, typedMeal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                typedMeal = initialSuggestedDescription
+                if let initialSuggestedMealType {
+                    selectedMealType = initialSuggestedMealType
+                }
+                state = .describe
             }
         }
         .onChange(of: existingMeals) { _, meals in
@@ -134,11 +151,27 @@ struct BeULogMealSheet: View {
         ) {
             Button("Delete", role: .destructive) {
                 guard let pendingDeleteMeal else { return }
-                deleteMeal(pendingDeleteMeal)
+                Task { await deleteMeal(pendingDeleteMeal) }
             }
+            .disabled(isDeletingMeal)
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This will remove the meal and update your daily calories and macros.")
+        }
+        .overlay(alignment: .bottom) {
+            if let successMessage {
+                Text(successMessage)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(BeUTheme.primaryText)
+                    )
+                    .padding(.bottom, 24)
+                    .transition(.opacity)
+            }
         }
     }
 
@@ -150,6 +183,10 @@ struct BeULogMealSheet: View {
                 meals: displayedMeals,
                 waterLitres: waterLitres,
                 waterTargetLitres: waterTargetLitres,
+                calorieTarget: calorieTarget,
+                proteinTarget: proteinTarget,
+                goalType: goalType,
+                healthConditions: healthConditions,
                 onLogWater: onLogWater,
                 onTakePhoto: mealLoggingViewModel.takePhotoTapped,
                 onDescribe: {
@@ -189,6 +226,7 @@ struct BeULogMealSheet: View {
             if let analysis {
                 BeUMacroEstimateView(
                     analysis: analysis,
+                    mealQuality: mealQualityResult,
                     selectedMealType: $selectedMealType,
                     onLogMeal: saveMeal
                 )
@@ -231,7 +269,9 @@ struct BeULogMealSheet: View {
     }
 
     private func analyzeImage(_ image: UIImage) async {
-        loadingMessage = "Estimating your meal..."
+        loadingMessage = backendIsWaking
+            ? "Waking BeU analysis engine. This may take a few seconds."
+            : "Estimating your meal..."
         state = .analyzing
         errorMessage = nil
 
@@ -239,13 +279,8 @@ struct BeULogMealSheet: View {
             let loaded = try await analysisService.analyzeFoodImage(image, userId: userId)
             apply(loaded)
         } catch {
-            do {
-                let fallback = try await fallbackImageAnalysisService.analyzeFoodImage(image, userId: userId)
-                apply(fallback)
-            } catch {
-                errorMessage = "Meal analysis is unavailable right now. Please try again."
-                state = .chooser
-            }
+            errorMessage = "Meal analysis failed. Please try again."
+            state = .chooser
         }
     }
 
@@ -257,7 +292,9 @@ struct BeULogMealSheet: View {
         }
 
         typedMealError = nil
-        loadingMessage = "Estimating your meal..."
+        loadingMessage = backendIsWaking
+            ? "Waking BeU analysis engine. This may take a few seconds."
+            : "Estimating your meal..."
         state = .analyzing
         errorMessage = nil
 
@@ -280,6 +317,11 @@ struct BeULogMealSheet: View {
 
     private func confirmReviewedItems() async {
         guard var current = analysis else { return }
+        guard reviewItems.isEmpty == false else {
+            errorMessage = "Add at least one item before saving."
+            state = .review
+            return
+        }
         let sanitizedItems = reviewItems.map { item in
             DetectedFoodItem(
                 id: item.id,
@@ -295,7 +337,9 @@ struct BeULogMealSheet: View {
             )
         }
 
-        loadingMessage = "Estimating your meal..."
+        loadingMessage = backendIsWaking
+            ? "Waking BeU analysis engine. This may take a few seconds."
+            : "Estimating your meal..."
         state = .analyzing
 
         do {
@@ -367,6 +411,11 @@ struct BeULogMealSheet: View {
 
     private func saveMeal() {
         guard let analysis else { return }
+        guard reviewItems.isEmpty == false else {
+            errorMessage = "Add at least one item before saving."
+            state = .review
+            return
+        }
 
         let imagePath: String?
         if let selectedImage, editingMeal == nil {
@@ -409,14 +458,54 @@ struct BeULogMealSheet: View {
         }
     }
 
-    private func deleteMeal(_ meal: MealLog) {
-        onDelete(meal)
-        displayedMeals.removeAll { $0.id == meal.id }
-        if editingMeal?.id == meal.id {
-            resetDraftForNewMeal()
+    private func deleteMeal(_ meal: MealLog) async {
+        let mealId = meal.id
+        guard isDeletingMeal == false else { return }
+
+        await MainActor.run {
+            isDeletingMeal = true
+            successMessage = nil
+        }
+
+        print("[MealDelete] Delete requested:", mealId)
+        let deleted = await onDelete(meal)
+
+        await MainActor.run {
+            if deleted {
+                clearDeletedMealState(mealId: mealId)
+                displayedMeals = sortedMeals(existingMeals.filter { $0.id != mealId })
+                pendingDeleteMeal = nil
+                isDeletingMeal = false
+                successMessage = "Meal deleted"
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    await MainActor.run {
+                        if self.successMessage == "Meal deleted" {
+                            self.successMessage = nil
+                        }
+                    }
+                }
+            } else {
+                errorMessage = "Could not delete meal. Please try again."
+                pendingDeleteMeal = nil
+                isDeletingMeal = false
+            }
+        }
+    }
+
+    private func clearDeletedMealState(mealId: String) {
+        editingMeal = nil
+        if analysis?.id == mealId {
+            analysis = nil
+        }
+        reviewItems = []
+        typedMeal = ""
+        typedMealError = nil
+        selectedImage = nil
+        selectedPhotoItem = nil
+        if state != .chooser {
             state = .chooser
         }
-        pendingDeleteMeal = nil
     }
 
     private func resetDraftForNewMeal() {
@@ -429,6 +518,26 @@ struct BeULogMealSheet: View {
         selectedMealType = .lunch
         selectedImage = nil
         selectedPhotoItem = nil
+    }
+
+    private var mealQualityResult: MealQualityResult? {
+        let baseCaloriesConsumed = max(currentCaloriesConsumed - (editingMeal?.totalCalories ?? 0), 0)
+        let baseProteinConsumed = max(currentProteinConsumed - (editingMeal?.totalProteinGrams ?? 0), 0)
+        let remainingCalories = max(calorieTarget - baseCaloriesConsumed, 0)
+        let remainingProtein = max(Double(proteinTarget) - baseProteinConsumed, 0)
+
+        return mealQualityService.scoreMeal(
+            items: reviewItems,
+            context: MealQualityContext(
+                mealType: selectedMealType,
+                goalType: goalType,
+                calorieTarget: calorieTarget,
+                proteinTarget: proteinTarget,
+                caloriesRemaining: remainingCalories,
+                proteinRemaining: remainingProtein,
+                healthConditions: healthConditions
+            )
+        )
     }
 
     private func sortedMeals(_ meals: [MealLog]) -> [MealLog] {
@@ -448,6 +557,10 @@ private struct MealLogEntryView: View {
     let meals: [MealLog]
     let waterLitres: Double
     let waterTargetLitres: Double
+    let calorieTarget: Int
+    let proteinTarget: Int
+    let goalType: String
+    let healthConditions: [String]
     let onLogWater: () -> Bool
     let onTakePhoto: () -> Void
     let onDescribe: () -> Void
@@ -498,6 +611,10 @@ private struct MealLogEntryView: View {
 
             PreviouslyLoggedMealsSection(
                 meals: meals,
+                calorieTarget: calorieTarget,
+                proteinTarget: proteinTarget,
+                goalType: goalType,
+                healthConditions: healthConditions,
                 onEditMeal: onEditMeal,
                 onDeleteMeal: onDeleteMeal
             )
@@ -685,11 +802,13 @@ private struct BeUDetectedFoodReviewView: View {
             BeUMealTypeSelector(selectedMealType: $selectedMealType)
 
             VStack(spacing: 12) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    EditableDetectedFoodRow(
-                        item: binding(for: index, item: item),
-                        onRemove: { items.remove(at: index) }
-                    )
+                ForEach(items, id: \.id) { item in
+                    if let binding = binding(for: item.id) {
+                        EditableDetectedFoodRow(
+                            item: binding,
+                            onRemove: { items.removeAll { $0.id == item.id } }
+                        )
+                    }
                 }
             }
 
@@ -722,16 +841,43 @@ private struct BeUDetectedFoodReviewView: View {
         }
     }
 
-    private func binding(for index: Int, item: DetectedFoodItem) -> Binding<DetectedFoodItem> {
-        Binding(
-            get: { items[index] },
-            set: { items[index] = $0 }
+    private func binding(for itemID: String) -> Binding<DetectedFoodItem>? {
+        guard items.contains(where: { $0.id == itemID }) else {
+            return nil
+        }
+
+        return Binding(
+            get: {
+                guard let liveIndex = items.firstIndex(where: { $0.id == itemID }) else {
+                    return DetectedFoodItem(
+                        id: itemID,
+                        name: "",
+                        estimatedPortion: "1 serving",
+                        quantityGrams: 0,
+                        confidence: "low",
+                        calories: 0,
+                        proteinGrams: 0,
+                        carbsGrams: 0,
+                        fatGrams: 0,
+                        userConfirmed: false
+                    )
+                }
+                return items[liveIndex]
+            },
+            set: { newValue in
+                guard let liveIndex = items.firstIndex(where: { $0.id == itemID }) else { return }
+                items[liveIndex] = newValue
+            }
         )
     }
 }
 
 private struct PreviouslyLoggedMealsSection: View {
     let meals: [MealLog]
+    let calorieTarget: Int
+    let proteinTarget: Int
+    let goalType: String
+    let healthConditions: [String]
     let onEditMeal: (MealLog) -> Void
     let onDeleteMeal: (MealLog) -> Void
 
@@ -752,6 +898,18 @@ private struct PreviouslyLoggedMealsSection: View {
                     ForEach(meals) { meal in
                         PreviouslyLoggedMealCard(
                             meal: meal,
+                            quality: MealQualityService().scoreMeal(
+                                items: meal.items,
+                                context: MealQualityContext(
+                                    mealType: meal.mealType,
+                                    goalType: goalType,
+                                    calorieTarget: calorieTarget,
+                                    proteinTarget: proteinTarget,
+                                    caloriesRemaining: nil,
+                                    proteinRemaining: nil,
+                                    healthConditions: healthConditions
+                                )
+                            ),
                             onEdit: { onEditMeal(meal) },
                             onDelete: { onDeleteMeal(meal) }
                         )
@@ -764,8 +922,10 @@ private struct PreviouslyLoggedMealsSection: View {
 
 private struct PreviouslyLoggedMealCard: View {
     let meal: MealLog
+    let quality: MealQualityResult?
     let onEdit: () -> Void
     let onDelete: () -> Void
+    @State private var showingQuality = false
 
     var body: some View {
         BeUCard {
@@ -792,6 +952,15 @@ private struct PreviouslyLoggedMealCard: View {
                     macroText("\(Int(meal.totalFatGrams.rounded()))g fat")
                 }
 
+                if let quality {
+                    Button {
+                        showingQuality = true
+                    } label: {
+                        MealQualityCompact(result: quality)
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 HStack(spacing: 16) {
                     Button("Edit", action: onEdit)
                         .font(.system(size: 14, weight: .semibold))
@@ -802,6 +971,14 @@ private struct PreviouslyLoggedMealCard: View {
                         .foregroundColor(BeUTheme.lowStatus)
                         .buttonStyle(.plain)
                 }
+            }
+        }
+        .sheet(isPresented: $showingQuality) {
+            if let quality {
+                MealQualityCard(result: quality)
+                    .padding(16)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
             }
         }
     }
@@ -830,6 +1007,7 @@ private struct PreviouslyLoggedMealCard: View {
 
 private struct BeUMacroEstimateView: View {
     let analysis: FoodImageAnalysis
+    let mealQuality: MealQualityResult?
     @Binding var selectedMealType: MealType
     let onLogMeal: () -> Void
 
@@ -850,6 +1028,10 @@ private struct BeUMacroEstimateView: View {
                         macroBlock("Fat", "\(Int(analysis.totalFatGrams.rounded()))g")
                     }
                 }
+            }
+
+            if let mealQuality {
+                MealQualityCard(result: mealQuality)
             }
 
             BeUMealTypeSelector(selectedMealType: $selectedMealType)

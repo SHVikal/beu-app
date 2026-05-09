@@ -765,19 +765,25 @@ final class DietGuidanceService {
 final class PlanService {
     private let apiClient: APIClient
     private let dietGuidanceService: DietGuidanceService
+    private let adaptivePlanService: AdaptivePlanService
     private let mealLogService: MealLogService
     private let suggestionHistoryService: DietSuggestionHistoryService
+    private let supplementIntakeLogRepository: SupplementIntakeLogRepository
 
     init(
         apiClient: APIClient = APIClient(),
         dietGuidanceService: DietGuidanceService = DietGuidanceService(),
         mealLogService: MealLogService = MealLogService(),
-        suggestionHistoryService: DietSuggestionHistoryService = DietSuggestionHistoryService()
+        suggestionHistoryService: DietSuggestionHistoryService = DietSuggestionHistoryService(),
+        adaptivePlanService: AdaptivePlanService = AdaptivePlanService(),
+        supplementIntakeLogRepository: SupplementIntakeLogRepository = SupplementIntakeLogRepository()
     ) {
         self.apiClient = apiClient
         self.dietGuidanceService = dietGuidanceService
         self.mealLogService = mealLogService
         self.suggestionHistoryService = suggestionHistoryService
+        self.adaptivePlanService = adaptivePlanService
+        self.supplementIntakeLogRepository = supplementIntakeLogRepository
     }
 
     func fetchTodayPlan(userId: String) async throws -> DailyPersonalizedActionPlan {
@@ -1058,6 +1064,8 @@ final class PlanService {
         let planDate = summary?.date ?? ISODateOnlyFormatter.shared.string(from: Date())
         let mealsLoggedToday = mealLogService.mealLogs(for: userId, date: planDate)
         let suggestionHistory = suggestionHistoryService.histories(for: userId)
+        let supplementLogs = supplementIntakeLogRepository.getLogs(userId: userId, date: planDate)
+        let activeConditions = baseline.medical.filter { $0 != .none && $0 != .preferNotToSay }
         let dietGuidance = dietGuidanceService.buildGuidance(
             from: DietGuidanceContext(
                 userId: userId,
@@ -1077,6 +1085,61 @@ final class PlanService {
                 proteinTarget: targetPair.protein,
                 waterTarget: waterTarget,
                 stepTarget: cardioStepsTarget
+            )
+        )
+        let adaptivePlan = adaptivePlanService.build(
+            input: AdaptivePlanInput(
+                userId: userId,
+                date: planDate,
+                goal: .init(
+                    goalType: adaptiveGoalType(goalConfig.goal),
+                    targetWeightKg: goalConfig.targetWeightKg.map(Double.init),
+                    timelineWeeks: timelineWeeks(for: goalConfig)
+                ),
+                baseTargets: .init(
+                    calorieTarget: targetPair.kcal,
+                    proteinTargetGrams: targetPair.protein,
+                    stepTarget: cardioStepsTarget,
+                    waterTargetLiters: ((waterTarget * 10).rounded()) / 10,
+                    burnTargetKcal: energyBalance.dailyBurnTarget
+                ),
+                progress: .init(
+                    caloriesConsumed: intake.kcal,
+                    proteinConsumedGrams: Double(intake.protein),
+                    carbsConsumedGrams: Double(intake.carbs),
+                    fatConsumedGrams: Double(intake.fat),
+                    stepsCompleted: summary?.steps ?? intake.steps,
+                    activeEnergyBurnedKcal: summary.map { Int($0.activeEnergyKcal.rounded()) },
+                    estimatedTotalBurnKcal: energyBalance.estimatedTotalBurn,
+                    workoutEnergyBurnedKcal: energyBalance.workoutEnergyBurned,
+                    waterConsumedLiters: intake.waterLitres
+                ),
+                readiness: .init(
+                    score: readiness.score,
+                    status: adaptiveReadinessStatus(readiness.status),
+                    usedDefaultSleep: readiness.usedDefaultSleep
+                ),
+                historicalPerformance: .init(
+                    sevenDayAvgSteps: average(recentSummaries.map(\.steps)),
+                    sevenDayAvgActiveEnergyKcal: average(recentSummaries.map { Int($0.activeEnergyKcal.rounded()) }),
+                    proteinTargetHitDaysLast7: proteinTargetHitDays(recentSummaries: recentSummaries, userId: userId, proteinTarget: targetPair.protein),
+                    stepTargetHitDaysLast7: recentSummaries.filter { $0.steps >= cardioStepsTarget }.count,
+                    calorieTargetHitDaysLast7: calorieTargetHitDays(recentSummaries: recentSummaries, userId: userId, calorieTarget: targetPair.kcal),
+                    readinessTrend: readinessTrendLabel(recentSummaries: recentSummaries),
+                    strengthSessionsLast7Days: recentSummaries.filter { $0.workoutCount > 0 || $0.workoutMinutes >= 20 }.count
+                ),
+                todayContext: .init(
+                    currentHour: Calendar.current.component(.hour, from: Date()),
+                    mealsLoggedToday: mealsLoggedToday.count,
+                    workoutToday: (summary?.workoutCount ?? 0) > 0 || Int((summary?.workoutEnergyKcal ?? 0).rounded()) >= 100,
+                    workoutYesterday: workoutYesterday(recentSummaries: recentSummaries, todayDate: planDate),
+                    supplementsDue: adaptiveSupplementReminders(
+                        supplements: baseline.supplements,
+                        logs: supplementLogs,
+                        date: planDate
+                    ),
+                    healthConditions: activeConditions.map { $0.title }
+                )
             )
         )
 
@@ -1121,6 +1184,7 @@ final class PlanService {
             cardioStepsTarget: cardioStepsTarget,
             cardioMessage: LanguageGuard.sanitized(cardioMessage),
             energyBalance: energyBalance,
+            adaptivePlan: adaptivePlan,
             dietGuidance: dietGuidance,
             supplementReminders: supplementReminders,
             healthContextNote: healthContextNote,
@@ -1175,6 +1239,108 @@ final class PlanService {
             message: LanguageGuard.sanitized(message)
         )
     }
+
+    private func adaptiveGoalType(_ goal: Goal) -> String {
+        switch goal {
+        case .fatLoss: return "fat_loss"
+        case .muscle: return "muscle_gain"
+        case .maintain: return "maintain"
+        case .wellness: return "general_wellness"
+        }
+    }
+
+    private func adaptiveReadinessStatus(_ status: ReadinessStatus) -> String {
+        switch status {
+        case .high: return "high"
+        case .good: return "good"
+        case .moderate: return "moderate"
+        case .low: return "low"
+        case .limitedData: return "limited_data"
+        }
+    }
+
+    private func timelineWeeks(for config: GoalConfig) -> Int? {
+        switch config.timeline {
+        case .oneMonth: return 4
+        case .threeMonths: return 12
+        case .sixMonths: return 24
+        case .oneYear: return 52
+        case .custom: return max(config.customYears, 1) * 52
+        }
+    }
+
+    private func average(_ values: [Int]) -> Int? {
+        guard values.isEmpty == false else { return nil }
+        return Int((Double(values.reduce(0, +)) / Double(values.count)).rounded())
+    }
+
+    private func proteinTargetHitDays(recentSummaries: [HealthSummary], userId: String, proteinTarget: Int) -> Int {
+        recentSummaries.reduce(into: 0) { count, summary in
+            let dayMeals = mealLogService.mealLogs(for: userId, date: summary.date)
+            let protein = dayMeals.reduce(0.0) { $0 + $1.totalProteinGrams }
+            if protein >= Double(proteinTarget) {
+                count += 1
+            }
+        }
+    }
+
+    private func calorieTargetHitDays(recentSummaries: [HealthSummary], userId: String, calorieTarget: Int) -> Int {
+        recentSummaries.reduce(into: 0) { count, summary in
+            let dayMeals = mealLogService.mealLogs(for: userId, date: summary.date)
+            let calories = dayMeals.reduce(0) { $0 + $1.totalCalories }
+            if calories <= calorieTarget {
+                count += 1
+            }
+        }
+    }
+
+    private func readinessTrendLabel(recentSummaries: [HealthSummary]) -> String? {
+        guard recentSummaries.count >= 4 else { return "stable" }
+        let ordered = recentSummaries.sorted { $0.date < $1.date }
+        let firstHalf = ordered.prefix(ordered.count / 2).map(\.sleepHours)
+        let secondHalf = ordered.suffix(ordered.count / 2).map(\.sleepHours)
+        let firstAvg = firstHalf.reduce(0, +) / Double(max(firstHalf.count, 1))
+        let secondAvg = secondHalf.reduce(0, +) / Double(max(secondHalf.count, 1))
+        if secondAvg - firstAvg > 0.3 { return "improving" }
+        if firstAvg - secondAvg > 0.3 { return "declining" }
+        return "stable"
+    }
+
+    private func workoutYesterday(recentSummaries: [HealthSummary], todayDate: String) -> Bool {
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: ISODateOnlyFormatter.shared.date(from: todayDate) ?? Date())
+        let key = yesterday.map { ISODateOnlyFormatter.shared.string(from: $0) }
+        guard let key else { return false }
+        guard let summary = recentSummaries.first(where: { $0.date == key }) else { return false }
+        return summary.workoutCount > 0 || Int(summary.workoutEnergyKcal.rounded()) >= 100
+    }
+
+    private func adaptiveSupplementReminders(supplements: [Supplement], logs: [SupplementIntakeLog], date: String) -> [AdaptiveSupplementReminder] {
+        supplements.filter(\.isActive).map { supplement in
+            let taken = logs.contains { $0.supplementId == supplement.id && $0.date == date && $0.status == "taken" }
+            return AdaptiveSupplementReminder(
+                id: supplement.id,
+                supplementId: supplement.id,
+                name: supplement.name,
+                timing: supplement.timeOfDay?.title,
+                status: taken ? "taken" : dueStatus(for: supplement.timeOfDay)
+            )
+        }
+    }
+
+    private func dueStatus(for time: SupplementTime?) -> String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch time {
+        case .morning? where hour >= 12:
+            return "due_today"
+        case .afternoon? where hour >= 17:
+            return "due_today"
+        case .evening?, .beforeBed?:
+            return hour < 17 ? "due_later" : "due_today"
+        default:
+            return "due_today"
+        }
+    }
+
 
     private func calculateBMR(weightKg: Int, heightCm: Int, age: Int, gender: Gender) -> Int {
         let s: Int
