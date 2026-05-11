@@ -80,6 +80,7 @@
 		00A000000000000000000047 /* Models/AdaptiveCoachFeatureModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A000000000000000000147 /* Models/AdaptiveCoachFeatureModels.swift */; };
 		00A000000000000000000048 /* Services/AdaptiveCoachFeatureServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A000000000000000000148 /* Services/AdaptiveCoachFeatureServices.swift */; };
 		00A000000000000000000049 /* Views/Components/AdaptiveCoachFeatureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A000000000000000000149 /* Views/Components/AdaptiveCoachFeatureViews.swift */; };
+		00A00000000000000000004A /* Services/DynamicTargetService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A00000000000000000014A /* Services/DynamicTargetService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -158,6 +159,7 @@
 		00A000000000000000000147 /* Models/AdaptiveCoachFeatureModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/AdaptiveCoachFeatureModels.swift; sourceTree = "<group>"; };
 		00A000000000000000000148 /* Services/AdaptiveCoachFeatureServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AdaptiveCoachFeatureServices.swift; sourceTree = "<group>"; };
 		00A000000000000000000149 /* Views/Components/AdaptiveCoachFeatureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/Components/AdaptiveCoachFeatureViews.swift; sourceTree = "<group>"; };
+		00A00000000000000000014A /* Services/DynamicTargetService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/DynamicTargetService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -199,6 +201,7 @@
 				00A000000000000000000109 /* Services/APIClient.swift */,
 				00A000000000000000000146 /* Services/AdaptivePlanService.swift */,
 				00A000000000000000000148 /* Services/AdaptiveCoachFeatureServices.swift */,
+				00A00000000000000000014A /* Services/DynamicTargetService.swift */,
 				00A000000000000000000134 /* Services/APIConfig.swift */,
 				00A00000000000000000010F /* Services/CameraPermissionService.swift */,
 				00A00000000000000000012A /* Services/GoalStore.swift */,
@@ -409,6 +412,7 @@
 				00A000000000000000000047 /* Models/AdaptiveCoachFeatureModels.swift in Sources */,
 				00A000000000000000000048 /* Services/AdaptiveCoachFeatureServices.swift in Sources */,
 				00A000000000000000000049 /* Views/Components/AdaptiveCoachFeatureViews.swift in Sources */,
+				00A00000000000000000004A /* Services/DynamicTargetService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

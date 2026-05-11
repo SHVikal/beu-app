@@ -766,6 +766,7 @@ final class PlanService {
     private let apiClient: APIClient
     private let dietGuidanceService: DietGuidanceService
     private let adaptivePlanService: AdaptivePlanService
+    private let dynamicTargetService: DynamicTargetService
     private let mealLogService: MealLogService
     private let suggestionHistoryService: DietSuggestionHistoryService
     private let supplementIntakeLogRepository: SupplementIntakeLogRepository
@@ -776,6 +777,7 @@ final class PlanService {
         mealLogService: MealLogService = MealLogService(),
         suggestionHistoryService: DietSuggestionHistoryService = DietSuggestionHistoryService(),
         adaptivePlanService: AdaptivePlanService = AdaptivePlanService(),
+        dynamicTargetService: DynamicTargetService = DynamicTargetService(),
         supplementIntakeLogRepository: SupplementIntakeLogRepository = SupplementIntakeLogRepository()
     ) {
         self.apiClient = apiClient
@@ -783,6 +785,7 @@ final class PlanService {
         self.mealLogService = mealLogService
         self.suggestionHistoryService = suggestionHistoryService
         self.adaptivePlanService = adaptivePlanService
+        self.dynamicTargetService = dynamicTargetService
         self.supplementIntakeLogRepository = supplementIntakeLogRepository
     }
 
@@ -1002,18 +1005,6 @@ final class PlanService {
         let basalEnergyBurned = summary?.basalEnergyKcal.map { Int($0.rounded()) }
         let workoutEnergyBurned = Int((summary?.workoutEnergyKcal ?? 0).rounded())
         let estimatedTotalBurn = Int(((summary?.basalEnergyKcal ?? Double(estimatedBMR)) + (summary?.activeEnergyKcal ?? 0)).rounded())
-        let remainingBurnTarget = max(0, dailyBurnTarget - estimatedTotalBurn)
-        let energyBalance = buildEnergyBalance(
-            date: summary?.date ?? ISODateOnlyFormatter.shared.string(from: Date()),
-            calorieTarget: targetPair.kcal,
-            caloriesConsumed: intake.kcal,
-            activeEnergyBurned: activeEnergyBurned,
-            basalEnergyBurned: basalEnergyBurned,
-            workoutEnergyBurned: workoutEnergyBurned,
-            estimatedTotalBurn: estimatedTotalBurn,
-            dailyBurnTarget: dailyBurnTarget
-        )
-
         let baseSteps: Int
         switch goalConfig.goal {
         case .fatLoss:
@@ -1026,43 +1017,52 @@ final class PlanService {
             baseSteps = 7200
         }
 
-        let cardioStepsTarget: Int
-        let strength: PlanStrengthRecommendation
-        let cardioMessage: String
-
-        if readiness.status == .low {
-            cardioStepsTarget = Int((Double(baseSteps) * 0.85).rounded())
-            strength = PlanStrengthRecommendation(kind: .rest, durationMinutes: 0, intensity: "Rest day")
-            cardioMessage = remainingBurnTarget > 250
-                ? "Recovery is low, so keep movement light instead of chasing burn."
-                : "Keep movement light today."
-        } else if readiness.status == .limitedData {
-            cardioStepsTarget = remainingBurnTarget <= 0 ? max(summary?.steps ?? intake.steps, baseSteps - 400) : baseSteps
-            strength = PlanStrengthRecommendation(kind: .optional, durationMinutes: 30, intensity: "Light")
-            cardioMessage = "Some recovery data is still syncing, so keep activity balanced and follow your normal plan."
-        } else if goalConfig.goal == .muscle {
-            cardioStepsTarget = remainingBurnTarget <= 0 ? max(summary?.steps ?? intake.steps, baseSteps - 600) : baseSteps
-            strength = PlanStrengthRecommendation(kind: .required, durationMinutes: 45, intensity: readiness.status == .high ? "Moderate" : "Light")
-            cardioMessage = workoutEnergyBurned > 250
-                ? "Workout burn is already strong today. Extra cardio is optional."
-                : "Keep steps reasonable and let training lead the day."
-        } else {
-            cardioStepsTarget = remainingBurnTarget <= 0
-                ? max(summary?.steps ?? intake.steps, baseSteps - 400)
-                : ((readiness.status == .high || readiness.status == .good) && goalConfig.goal == .fatLoss ? baseSteps + 400 : baseSteps)
-            strength = PlanStrengthRecommendation(kind: .optional, durationMinutes: 30, intensity: readiness.status == .high ? "Moderate" : "Light")
-            if remainingBurnTarget > 250 {
-                cardioMessage = "A walk is the easiest way to close today's burn gap."
-            } else {
-                cardioMessage = "You're on track. Extra steps are optional."
-            }
-        }
-
         let supplementReminders = buildSupplementReminders(from: baseline.supplements)
         let healthContextNote = healthContextNote(for: baseline.medical)
         let safetyNote = safetyNote(for: baseline.medical)
         let planDate = summary?.date ?? ISODateOnlyFormatter.shared.string(from: Date())
         let mealsLoggedToday = mealLogService.mealLogs(for: userId, date: planDate)
+        let last7Days = buildLast7PerformanceSummaries(userId: userId, recentSummaries: recentSummaries, todaySummary: summary, readiness: readiness)
+        let baseTargets = BaseTargets(
+            calories: targetPair.kcal,
+            proteinGrams: Double(targetPair.protein),
+            steps: baseSteps,
+            waterLiters: ((waterTarget * 10).rounded()) / 10,
+            burnTargetKcal: dailyBurnTarget
+        )
+        let dynamicTargets = dynamicTargetService.generateDynamicTargets(
+            context: DynamicTargetContext(
+                date: ISODateOnlyFormatter.shared.date(from: planDate) ?? Date(),
+                profile: baseline,
+                goal: goalConfig,
+                baseTargets: baseTargets,
+                todayProgress: TodayProgress(
+                    caloriesConsumed: intake.kcal,
+                    proteinConsumedGrams: Double(intake.protein),
+                    carbsConsumedGrams: Double(intake.carbs),
+                    fatConsumedGrams: Double(intake.fat),
+                    mealsLogged: mealsLoggedToday.count,
+                    waterConsumedLiters: intake.waterLitres
+                ),
+                healthToday: summary,
+                readiness: readiness,
+                last7Days: last7Days,
+                currentHour: Calendar.current.component(.hour, from: Date())
+            )
+        )
+        let cardioStepsTarget = dynamicTargets.adaptiveTargets.steps
+        let strength = strengthRecommendation(from: dynamicTargets, goal: goalConfig.goal)
+        let cardioMessage = cardioMessage(from: dynamicTargets)
+        let energyBalance = buildEnergyBalance(
+            date: summary?.date ?? ISODateOnlyFormatter.shared.string(from: Date()),
+            calorieTarget: dynamicTargets.adaptiveTargets.calories,
+            caloriesConsumed: intake.kcal,
+            activeEnergyBurned: activeEnergyBurned,
+            basalEnergyBurned: basalEnergyBurned,
+            workoutEnergyBurned: workoutEnergyBurned,
+            estimatedTotalBurn: estimatedTotalBurn,
+            dailyBurnTarget: dailyBurnTarget
+        )
         let suggestionHistory = suggestionHistoryService.histories(for: userId)
         let supplementLogs = supplementIntakeLogRepository.getLogs(userId: userId, date: planDate)
         let activeConditions = baseline.medical.filter { $0 != .none && $0 != .preferNotToSay }
@@ -1081,9 +1081,9 @@ final class PlanService {
                 mealsLoggedToday: mealsLoggedToday,
                 suggestionHistory: suggestionHistory,
                 energyBalance: energyBalance,
-                calorieTarget: targetPair.kcal,
-                proteinTarget: targetPair.protein,
-                waterTarget: waterTarget,
+                calorieTarget: dynamicTargets.adaptiveTargets.calories,
+                proteinTarget: Int(dynamicTargets.adaptiveTargets.proteinGrams.rounded()),
+                waterTarget: dynamicTargets.adaptiveTargets.waterLiters,
                 stepTarget: cardioStepsTarget
             )
         )
@@ -1097,10 +1097,10 @@ final class PlanService {
                     timelineWeeks: timelineWeeks(for: goalConfig)
                 ),
                 baseTargets: .init(
-                    calorieTarget: targetPair.kcal,
-                    proteinTargetGrams: targetPair.protein,
+                    calorieTarget: dynamicTargets.adaptiveTargets.calories,
+                    proteinTargetGrams: Int(dynamicTargets.adaptiveTargets.proteinGrams.rounded()),
                     stepTarget: cardioStepsTarget,
-                    waterTargetLiters: ((waterTarget * 10).rounded()) / 10,
+                    waterTargetLiters: dynamicTargets.adaptiveTargets.waterLiters,
                     burnTargetKcal: energyBalance.dailyBurnTarget
                 ),
                 progress: .init(
@@ -1122,9 +1122,9 @@ final class PlanService {
                 historicalPerformance: .init(
                     sevenDayAvgSteps: average(recentSummaries.map(\.steps)),
                     sevenDayAvgActiveEnergyKcal: average(recentSummaries.map { Int($0.activeEnergyKcal.rounded()) }),
-                    proteinTargetHitDaysLast7: proteinTargetHitDays(recentSummaries: recentSummaries, userId: userId, proteinTarget: targetPair.protein),
+                    proteinTargetHitDaysLast7: proteinTargetHitDays(recentSummaries: recentSummaries, userId: userId, proteinTarget: Int(dynamicTargets.adaptiveTargets.proteinGrams.rounded())),
                     stepTargetHitDaysLast7: recentSummaries.filter { $0.steps >= cardioStepsTarget }.count,
-                    calorieTargetHitDaysLast7: calorieTargetHitDays(recentSummaries: recentSummaries, userId: userId, calorieTarget: targetPair.kcal),
+                    calorieTargetHitDaysLast7: calorieTargetHitDays(recentSummaries: recentSummaries, userId: userId, calorieTarget: dynamicTargets.adaptiveTargets.calories),
                     readinessTrend: readinessTrendLabel(recentSummaries: recentSummaries),
                     strengthSessionsLast7Days: recentSummaries.filter { $0.workoutCount > 0 || $0.workoutMinutes >= 20 }.count
                 ),
@@ -1150,6 +1150,7 @@ final class PlanService {
             "Apple Health active energy shapes daily burn progress, while workout calories are shown separately for context.",
             "Estimated total burn uses basal energy when Apple Health provides it, otherwise BeU falls back to BMR plus active energy.",
         ]
+        explanation.append(contentsOf: dynamicTargets.explanation)
 
         if baseline.medical.contains(.pcos) {
             explanation.append("PCOS is in your baseline, so the plan favors balanced meals, protein, and consistency.")
@@ -1174,9 +1175,11 @@ final class PlanService {
         }
 
         return DailyPlan(
-            kcalTarget: targetPair.kcal,
-            proteinTarget: targetPair.protein,
-            waterLitresTarget: ((waterTarget * 10).rounded()) / 10,
+            kcalTarget: dynamicTargets.adaptiveTargets.calories,
+            proteinTarget: Int(dynamicTargets.adaptiveTargets.proteinGrams.rounded()),
+            waterLitresTarget: dynamicTargets.adaptiveTargets.waterLiters,
+            baseTargets: baseTargets,
+            dynamicTargets: dynamicTargets,
             carbGuidance: LanguageGuard.sanitized(carbGuidance),
             calorieDirection: LanguageGuard.sanitized(calorieDirection),
             proteinLevel: LanguageGuard.sanitized(proteinLevel),
@@ -1191,6 +1194,87 @@ final class PlanService {
             safetyNote: safetyNote,
             explanation: LanguageGuard.sanitized(explanation)
         )
+    }
+
+    private func buildLast7PerformanceSummaries(
+        userId: String,
+        recentSummaries: [HealthSummary],
+        todaySummary: HealthSummary?,
+        readiness: Readiness
+    ) -> [DailyPerformanceSummary] {
+        let calendar = Calendar.current
+        var summariesByDate = Dictionary(uniqueKeysWithValues: recentSummaries.map { ($0.date, $0) })
+        if let todaySummary {
+            summariesByDate[todaySummary.date] = todaySummary
+        }
+
+        return (0..<7).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: Date()) else { return nil }
+            let key = ISODateOnlyFormatter.shared.string(from: date)
+            let meals = mealLogService.mealLogs(for: userId, date: key)
+            let summary = summariesByDate[key]
+            let readinessScore = key == todaySummary?.date ? readiness.score : nil
+            return DailyPerformanceSummary(
+                date: date,
+                caloriesConsumed: meals.reduce(0) { $0 + $1.totalCalories },
+                proteinConsumedGrams: meals.reduce(0) { $0 + $1.totalProteinGrams },
+                steps: summary?.steps ?? 0,
+                activeEnergyBurnedKcal: summary.map { Int($0.activeEnergyKcal.rounded()) },
+                readinessScore: readinessScore,
+                workoutCompleted: (summary?.workoutCount ?? 0) > 0 || (summary?.workoutMinutes ?? 0) >= 20 || Int((summary?.workoutEnergyKcal ?? 0).rounded()) >= 100
+            )
+        }
+    }
+
+    private func strengthRecommendation(from result: DynamicTargetResult, goal: Goal) -> PlanStrengthRecommendation {
+        let adaptive = result.adaptiveTargets
+        let kind: PlanStrengthKind
+        if adaptive.strengthMinutes <= 0 {
+            kind = .rest
+        } else if goal == .muscle {
+            kind = .required
+        } else {
+            kind = .optional
+        }
+
+        let intensityLabel: String
+        switch adaptive.strengthIntensity.lowercased() {
+        case "done":
+            intensityLabel = "Done"
+        case "light":
+            intensityLabel = "Light"
+        case "moderate":
+            intensityLabel = "Moderate"
+        case "high":
+            intensityLabel = "High"
+        default:
+            intensityLabel = adaptive.strengthIntensity.capitalized
+        }
+
+        return PlanStrengthRecommendation(
+            kind: kind,
+            durationMinutes: adaptive.strengthMinutes,
+            intensity: intensityLabel
+        )
+    }
+
+    private func cardioMessage(from result: DynamicTargetResult) -> String {
+        switch result.planMode {
+        case .recoveryFirst:
+            return "Recovery is low, so movement stays lighter today."
+        case .activityAhead, .weeklyOverperforming:
+            return "Burn target is already on track."
+        case .activityBehind, .weeklyUnderperforming:
+            return "A practical walk can help close the movement gap."
+        case .caloriesOver:
+            return "Calories are above target, so movement stays practical rather than aggressive."
+        case .nutritionBehind:
+            return "Movement is steady; the bigger lever is getting protein back on track."
+        case .aggressiveGoalCorrection:
+            return "BeU is tightening execution, not pushing extreme targets."
+        case .onTrack:
+            return "Targets are broadly on track today."
+        }
     }
 
     private func buildEnergyBalance(

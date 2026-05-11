@@ -776,13 +776,14 @@ struct EngineCoordinatorView: View {
         .task { await coordinator.refreshAll() }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
-            Task { await coordinator.warmUpBackendIfNeeded(force: true) }
+            Task { await coordinator.refreshAll() }
         }
     }
 }
 
 private struct BeUHomeTabView: View {
     @ObservedObject var coordinator: EngineCoordinatorModel
+    @State private var showingTargetUpdates = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -816,6 +817,13 @@ private struct BeUHomeTabView: View {
             .padding(.horizontal, 16)
             .padding(.top, 16)
             .padding(.bottom, 150)
+        }
+        .sheet(isPresented: $showingTargetUpdates) {
+            if let plan = coordinator.dailyPlan {
+                DynamicTargetExplanationSheet(result: plan.dynamicTargets)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
         }
     }
 
@@ -858,12 +866,25 @@ private struct BeUHomeTabView: View {
     private var targetsCard: some View {
         BeUCard {
             VStack(alignment: .leading, spacing: 16) {
-                BeUKicker(text: "Today's targets")
+                HStack {
+                    BeUKicker(text: "Today's targets")
+                    Spacer()
+                    if let plan = coordinator.dailyPlan, plan.dynamicTargets.targetChanges.isEmpty == false {
+                        Button {
+                            showingTargetUpdates = true
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(BeUTheme.secondaryText)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
                 if let plan = coordinator.dailyPlan {
-                    compactTargetRow("Calories", "\(coordinator.intake.kcal)", "\(plan.kcalTarget)", progress(Double(coordinator.intake.kcal), Double(plan.kcalTarget)), BeUTheme.accent)
-                    compactTargetRow("Protein", "\(coordinator.intake.protein)g", "\(plan.proteinTarget)g", progress(Double(coordinator.intake.protein), Double(plan.proteinTarget)), BeUTheme.warn)
+                    compactTargetRow("Calories", "\(coordinator.intake.kcal)", "\(plan.kcalTarget)", progress(Double(coordinator.intake.kcal), Double(plan.kcalTarget)), BeUTheme.accent, targetAdjustmentNote(for: "calories", plan: plan))
+                    compactTargetRow("Protein", "\(coordinator.intake.protein)g", "\(plan.proteinTarget)g", progress(Double(coordinator.intake.protein), Double(plan.proteinTarget)), BeUTheme.warn, targetAdjustmentNote(for: "protein", plan: plan))
                     compactTargetRow("Water", coordinator.formattedWaterValueText + "L", String(format: "%.1fL", plan.waterLitresTarget), progress(coordinator.intake.waterLitres, plan.waterLitresTarget), BeUTheme.ok)
-                    compactTargetRow("Steps", "\(coordinator.intake.steps)", "\(plan.cardioStepsTarget)", progress(Double(coordinator.intake.steps), Double(plan.cardioStepsTarget)), BeUTheme.accent)
+                    compactTargetRow("Steps", "\(coordinator.intake.steps)", "\(plan.cardioStepsTarget)", progress(Double(coordinator.intake.steps), Double(plan.cardioStepsTarget)), BeUTheme.accent, targetAdjustmentNote(for: "steps", plan: plan))
                 }
             }
         }
@@ -1052,7 +1073,7 @@ private struct BeUHomeTabView: View {
         return min(max(value / target, 0), 1)
     }
 
-    private func compactTargetRow(_ label: String, _ value: String, _ target: String, _ progressValue: Double, _ tint: Color) -> some View {
+    private func compactTargetRow(_ label: String, _ value: String, _ target: String, _ progressValue: Double, _ tint: Color, _ note: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(label)
@@ -1065,6 +1086,11 @@ private struct BeUHomeTabView: View {
                     .foregroundColor(BeUTheme.secondaryText)
             }
             BeUTargetBar(label: "", valueText: "", targetText: "", progress: progressValue, tint: tint)
+            if let note, note.isEmpty == false {
+                Text(note)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(BeUTheme.secondaryText)
+            }
         }
     }
 
@@ -1090,22 +1116,27 @@ private struct BeUHomeTabView: View {
     }
 
     private func homeStrengthSummary(_ plan: DailyPlan) -> String {
-        let advice = plan.adaptivePlan.strengthAdvice
-        if advice.durationMinutes <= 0 {
-            return advice.recommendation
+        let adaptive = plan.dynamicTargets.adaptiveTargets
+        if adaptive.strengthMinutes <= 0 {
+            return "Strength done today"
         }
-        return "\(advice.durationMinutes) min \(advice.intensity.lowercased())"
+        return "\(adaptive.strengthMinutes) min \(adaptive.strengthIntensity)"
     }
 
     private func homeCardioSummary(_ plan: DailyPlan) -> String {
-        let advice = plan.adaptivePlan.activityAdvice
-        if advice.stepsRemaining > 0, advice.cardioRecommendation == "Extra cardio is optional." {
-            return advice.cardioRecommendation
+        let adaptive = plan.dynamicTargets.adaptiveTargets
+        if adaptive.cardioMinutes <= 0 {
+            return "Optional only"
         }
-        if advice.stepsRemaining > 0 {
-            return advice.cardioRecommendation
+        if adaptive.cardioMinutes <= 10 {
+            return "\(adaptive.cardioMinutes) min light walk"
         }
-        return "Light walk"
+        return "\(adaptive.cardioMinutes) min walk"
+    }
+
+    private func targetAdjustmentNote(for targetName: String, plan: DailyPlan) -> String? {
+        guard plan.dynamicTargets.targetChanges.contains(where: { $0.targetName == targetName }) else { return nil }
+        return "Adjusted today"
     }
 }
 
@@ -1125,6 +1156,7 @@ private struct BeUPlanTabView: View {
                 if let plan = coordinator.dailyPlan {
                     intakeBurnSection(plan)
                     adaptiveCoachSection(plan)
+                    targetUpdatesSection(plan)
                     if let nextBest = coordinator.nextBestMealResult?.primary {
                         nextBestMealSection(nextBest)
                     }
@@ -1288,6 +1320,46 @@ private struct BeUPlanTabView: View {
                                     .background(Capsule(style: .continuous).fill(BeUTheme.accent.opacity(0.14)))
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    private func targetUpdatesSection(_ plan: DailyPlan) -> some View {
+        planSection(title: "Today’s target updates") {
+            if plan.dynamicTargets.targetChanges.isEmpty {
+                Text("Targets are stable today.")
+                    .font(BeUTheme.bodyFont)
+                    .foregroundColor(BeUTheme.secondaryText)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(plan.dynamicTargets.targetChanges) { change in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .top) {
+                                Text(dynamicTargetLabel(change.targetName))
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .foregroundColor(BeUTheme.primaryText)
+                                Spacer()
+                                Text("\(change.oldValue) → \(change.newValue)")
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .monospacedDigit()
+                                    .foregroundColor(BeUTheme.secondaryText)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                            Text(change.reason)
+                                .font(BeUTheme.helperFont)
+                                .foregroundColor(BeUTheme.secondaryText)
+                        }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(BeUTheme.cardAltBackground)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(BeUTheme.hairline, lineWidth: 0.5)
+                                )
+                        )
                     }
                 }
             }
@@ -1638,30 +1710,54 @@ private struct BeUPlanTabView: View {
     }
 
     private func adaptiveStrengthTitle(_ plan: DailyPlan) -> String {
-        let advice = plan.adaptivePlan.strengthAdvice
-        if advice.durationMinutes <= 0 {
-            return advice.recommendation
+        let adaptive = plan.dynamicTargets.adaptiveTargets
+        if adaptive.strengthMinutes <= 0 {
+            return "Strength done today · approx. \(adaptive.strengthEstimatedBurnKcal) kcal"
         }
-        let burn = advice.estimatedBurnKcal.map { " · approx. \($0) kcal" } ?? ""
-        return "\(advice.durationMinutes) min · \(advice.intensity.capitalized)\(burn)"
+        return "\(adaptive.strengthMinutes) min · \(adaptive.strengthIntensity.capitalized) · approx. \(adaptive.strengthEstimatedBurnKcal) kcal"
     }
 
     private func adaptiveStrengthSubtitle(_ plan: DailyPlan) -> String {
-        plan.adaptivePlan.strengthAdvice.message
+        if let change = plan.dynamicTargets.targetChanges.first(where: { $0.targetName == "strength" }) {
+            return change.reason
+        }
+        return plan.adaptivePlan.strengthAdvice.message
     }
 
     private func adaptiveCardioTitle(_ plan: DailyPlan) -> String {
-        let advice = plan.adaptivePlan.activityAdvice
-        let burn = advice.estimatedCardioBurnKcal.map { " · approx. \($0) kcal" } ?? ""
-        return advice.cardioRecommendation + burn
+        let adaptive = plan.dynamicTargets.adaptiveTargets
+        if adaptive.cardioMinutes <= 0 {
+            return "Extra cardio is optional."
+        }
+        return "\(adaptive.cardioMinutes) min walk · approx. \(adaptive.cardioEstimatedBurnKcal) kcal"
     }
 
     private func adaptiveCardioSubtitle(_ plan: DailyPlan) -> String {
-        let advice = plan.adaptivePlan.activityAdvice
-        if advice.stepsRemaining > 0 {
-            return "\(advice.stepsRemaining) steps remaining"
+        let remaining = max(plan.cardioStepsTarget - coordinator.intake.steps, 0)
+        if let change = plan.dynamicTargets.targetChanges.first(where: { $0.targetName == "cardio" }) {
+            return change.reason
         }
-        return advice.message
+        if remaining > 0 {
+            return "\(remaining) steps remaining"
+        }
+        return plan.adaptivePlan.activityAdvice.message
+    }
+
+    private func dynamicTargetLabel(_ targetName: String) -> String {
+        switch targetName {
+        case "calories":
+            return "Calories"
+        case "protein":
+            return "Protein"
+        case "steps":
+            return "Steps"
+        case "cardio":
+            return "Cardio"
+        case "strength":
+            return "Strength"
+        default:
+            return targetName.capitalized
+        }
     }
 
     private func conciseHealthNote(_ plan: DailyPlan) -> String? {

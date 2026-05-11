@@ -437,6 +437,89 @@ struct WhyThisChangedSheet: View {
     }
 }
 
+struct DynamicTargetExplanationSheet: View {
+    let result: DynamicTargetResult
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Today’s target updates")
+                        .font(BeUTheme.titleFont)
+                        .foregroundColor(BeUTheme.primaryText)
+
+                    if result.targetChanges.isEmpty {
+                        BeUCard {
+                            Text("Targets are stable today.")
+                                .font(BeUTheme.bodyFont)
+                                .foregroundColor(BeUTheme.secondaryText)
+                        }
+                    } else {
+                        ForEach(result.targetChanges) { change in
+                            BeUCard {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .top) {
+                                        Text(label(for: change.targetName))
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundColor(BeUTheme.primaryText)
+                                        Spacer()
+                                        Text("\(change.oldValue) → \(change.newValue)")
+                                            .font(.system(size: 12.5, weight: .medium))
+                                            .monospacedDigit()
+                                            .foregroundColor(BeUTheme.secondaryText)
+                                            .multilineTextAlignment(.trailing)
+                                    }
+                                    Text(change.reason)
+                                        .font(BeUTheme.bodyFont)
+                                        .foregroundColor(BeUTheme.secondaryText)
+                                }
+                            }
+                        }
+                    }
+
+                    if result.explanation.isEmpty == false {
+                        BeUCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                BeUKicker(text: "Why BeU changed this")
+                                ForEach(result.explanation, id: \.self) { line in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Circle()
+                                            .fill(BeUTheme.accent)
+                                            .frame(width: 5, height: 5)
+                                            .padding(.top, 6)
+                                        Text(line)
+                                            .font(BeUTheme.helperFont)
+                                            .foregroundColor(BeUTheme.secondaryText)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(BeUTheme.background.ignoresSafeArea())
+        }
+    }
+
+    private func label(for targetName: String) -> String {
+        switch targetName {
+        case "calories":
+            return "Calories"
+        case "protein":
+            return "Protein"
+        case "steps":
+            return "Steps"
+        case "cardio":
+            return "Cardio"
+        case "strength":
+            return "Strength"
+        default:
+            return targetName.capitalized
+        }
+    }
+}
+
 struct LoggedMealCardView: View {
     let meal: MealLog
     let quality: MealQualityResult?

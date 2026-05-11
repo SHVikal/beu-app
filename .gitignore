@@ -14,6 +14,7 @@ build/
 .clang-module-cache/
 DerivedData/
 .derivedData/
+.derivedData-device/
 *.xcuserstate
 xcuserdata/
 *.moved-aside

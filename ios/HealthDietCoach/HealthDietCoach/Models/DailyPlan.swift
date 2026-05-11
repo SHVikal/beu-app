@@ -16,6 +16,8 @@ struct DailyPlan: Codable, Equatable {
     var kcalTarget: Int
     var proteinTarget: Int
     var waterLitresTarget: Double
+    var baseTargets: BaseTargets
+    var dynamicTargets: DynamicTargetResult
     var carbGuidance: String
     var calorieDirection: String
     var proteinLevel: String
