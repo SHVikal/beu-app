@@ -6,6 +6,7 @@ import { dietRecommendationRoutes } from "./routes/dietRecommendationRoutes.js";
 import { nutritionRoutes } from "./routes/nutritionRoutes.js";
 import { foodRoutes } from "./routes/foodRoutes.js";
 import { planRoutes } from "./routes/planRoutes.js";
+import { appStateRoutes } from "./routes/appStateRoutes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { env } from "./config/env.js";
 
@@ -33,6 +34,7 @@ export function createApp() {
 
   app.use("/api/health-summary", healthSummaryRoutes);
   app.use("/api/user-goal", userGoalRoutes);
+  app.use("/api/app-state", appStateRoutes);
   app.use("/api/diet-recommendation", dietRecommendationRoutes);
   app.use("/api", nutritionRoutes);
   app.use("/api", foodRoutes);

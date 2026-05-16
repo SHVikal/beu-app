@@ -70,6 +70,7 @@ final class EngineCoordinatorModel: ObservableObject {
     private let mealLogService: MealLogService
     private let supplementIntakeLogRepository: SupplementIntakeLogRepository
     private let apiClient: APIClient
+    private let appStateSyncService: AppStateSyncService
     private let nextBestMealService: NextBestMealService
     private let weeklyReviewService: WeeklyReviewService
     private let dailyDeltaService: DailyDeltaService
@@ -89,6 +90,7 @@ final class EngineCoordinatorModel: ObservableObject {
         let mealLogService = MealLogService()
         let supplementIntakeLogRepository = SupplementIntakeLogRepository()
         let apiClient = APIClient()
+        let appStateSyncService = AppStateSyncService(apiClient: apiClient)
         let nextBestMealService = NextBestMealService()
         let weeklyReviewService = WeeklyReviewService()
         let dailyDeltaService = DailyDeltaService()
@@ -106,6 +108,7 @@ final class EngineCoordinatorModel: ObservableObject {
         self.mealLogService = mealLogService
         self.supplementIntakeLogRepository = supplementIntakeLogRepository
         self.apiClient = apiClient
+        self.appStateSyncService = appStateSyncService
         self.nextBestMealService = nextBestMealService
         self.weeklyReviewService = weeklyReviewService
         self.dailyDeltaService = dailyDeltaService
@@ -122,8 +125,11 @@ final class EngineCoordinatorModel: ObservableObject {
         } else {
             self.phase = .app
         }
-        Task { await warmUpBackendIfNeeded(force: true) }
-        Task { await refreshAll() }
+        Task {
+            await warmUpBackendIfNeeded(force: true)
+            await restoreRemoteStateIfAvailable()
+            await refreshAll()
+        }
     }
 
     var currentBaseline: Baseline {
@@ -219,6 +225,7 @@ final class EngineCoordinatorModel: ObservableObject {
         rebuildPlan()
         syncJourney()
         isLoading = false
+        synchronizeAppStateInBackground()
     }
 
     func warmUpBackendIfNeeded(force: Bool = false) async {
@@ -242,13 +249,9 @@ final class EngineCoordinatorModel: ObservableObject {
     func saveBaseline(_ baseline: Baseline) {
         onboardingStore.save(baseline)
         self.baseline = baseline
-        onboardingMode = .reviewBaseline
-        if goalConfig == nil {
-            phase = .changingGoal
-        } else {
-            phase = .app
-        }
+        updatePhaseFromStores()
         rebuildPlan()
+        synchronizeAppStateInBackground()
     }
 
     func saveGoal(_ goalConfig: GoalConfig) {
@@ -257,6 +260,7 @@ final class EngineCoordinatorModel: ObservableObject {
         phase = .app
         selectedTab = .home
         rebuildPlan()
+        synchronizeAppStateInBackground()
     }
 
     func reopenBaseline() {
@@ -274,6 +278,7 @@ final class EngineCoordinatorModel: ObservableObject {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         loadMeals()
         rebuildPlan()
+        synchronizeAppStateInBackground()
         if let target = dailyPlan?.waterLitresTarget {
             let litres = waterStore.litresToday
             UIAccessibility.post(
@@ -309,6 +314,7 @@ final class EngineCoordinatorModel: ObservableObject {
         showingMealSheet = false
         loadMeals()
         rebuildPlan()
+        synchronizeAppStateInBackground()
     }
 
     func didUpdateMeal(_ meal: MealLog) {
@@ -317,6 +323,7 @@ final class EngineCoordinatorModel: ObservableObject {
         logMealPrefill = nil
         loadMeals()
         rebuildPlan()
+        synchronizeAppStateInBackground()
     }
 
     @discardableResult
@@ -349,6 +356,9 @@ final class EngineCoordinatorModel: ObservableObject {
         }
         print("[MealDelete] Meals remaining:", mealsToday.count)
         scheduleTransientMessageClear()
+        if deleted {
+            synchronizeAppStateInBackground()
+        }
         return true
     }
 
@@ -373,12 +383,14 @@ final class EngineCoordinatorModel: ObservableObject {
         _ = supplementIntakeLogRepository.markTaken(userId: userId, supplementId: supplement.id, date: date)
         loadSupplementIntakeLogs()
         rebuildPlan()
+        synchronizeAppStateInBackground()
     }
 
     func undoSupplementTaken(_ supplement: Supplement) {
         supplementIntakeLogRepository.undoTaken(userId: userId, supplementId: supplement.id, date: selectedDate)
         loadSupplementIntakeLogs()
         rebuildPlan()
+        synchronizeAppStateInBackground()
     }
 
     func selectJourneyChallenge(_ challenge: JourneyChallenge) {
@@ -386,12 +398,14 @@ final class EngineCoordinatorModel: ObservableObject {
         journeyService.selectChallenge(challenge.id, for: userId)
         selectedJourneyChallenge = challenge
         syncJourney()
+        synchronizeAppStateInBackground()
     }
 
     func saveMealForLater(_ suggestion: NextBestMealSuggestion) {
         savedMealsForLater = adaptiveCoachFeatureStore.saveMeal(suggestion, userId: userId)
         transientMessage = "Saved for later"
         scheduleTransientMessageClear()
+        synchronizeAppStateInBackground()
     }
 
     func isMealSavedForLater(_ suggestion: NextBestMealSuggestion) -> Bool {
@@ -406,6 +420,7 @@ final class EngineCoordinatorModel: ObservableObject {
         showingWeeklyReview = false
         transientMessage = "Weekly focus saved"
         scheduleTransientMessageClear()
+        synchronizeAppStateInBackground()
     }
 
     func isSupplementTaken(_ supplement: Supplement) -> Bool {
@@ -458,6 +473,71 @@ final class EngineCoordinatorModel: ObservableObject {
 
     private func loadSupplementIntakeLogs() {
         supplementIntakeLogs = supplementIntakeLogRepository.getLogs(userId: userId, date: selectedDate)
+    }
+
+    private func updatePhaseFromStores() {
+        onboardingMode = onboardingStore.baseline == nil ? .firstRun : .reviewBaseline
+        if onboardingStore.baseline == nil {
+            phase = .onboard
+        } else if goalStore.goalConfig == nil {
+            phase = .changingGoal
+        } else {
+            phase = .app
+        }
+    }
+
+    private func buildAppStateSnapshot() -> AppStateSnapshotPayload {
+        AppStateSnapshotPayload(
+            baseline: onboardingStore.baseline,
+            baselineCreatedAt: onboardingStore.createdAt,
+            goalConfig: goalStore.goalConfig,
+            waterEntries: waterStore.allEntries(),
+            mealLogs: mealLogService.allMealLogs(for: userId),
+            supplementIntakeLogs: supplementIntakeLogRepository.allLogs(userId: userId),
+            journey: journeyService.persistenceSnapshot(for: userId),
+            adaptiveCoachFeatures: adaptiveCoachFeatureStore.snapshot(userId: userId)
+        )
+    }
+
+    private func applyAppStateSnapshot(_ snapshot: AppStateSnapshotPayload) {
+        onboardingStore.restore(baseline: snapshot.baseline, createdAt: snapshot.baselineCreatedAt)
+        goalStore.restore(snapshot.goalConfig)
+        waterStore.replaceAll(entries: snapshot.waterEntries)
+        mealLogService.replaceMealLogs(snapshot.mealLogs, userId: userId)
+        supplementIntakeLogRepository.replaceAll(snapshot.supplementIntakeLogs, userId: userId)
+        journeyService.restore(snapshot: snapshot.journey, for: userId)
+        adaptiveCoachFeatureStore.restore(snapshot: snapshot.adaptiveCoachFeatures, userId: userId)
+
+        baseline = onboardingStore.baseline
+        goalConfig = goalStore.goalConfig
+        savedMealsForLater = adaptiveCoachFeatureStore.savedMeals(userId: userId)
+        weeklyFocusChips = adaptiveCoachFeatureStore.weeklyFocus(userId: userId)
+        selectedJourneyChallenge = journeyService.selectedChallenge(for: userId)
+        loadSupplementIntakeLogs()
+        loadMeals()
+        updatePhaseFromStores()
+    }
+
+    private func restoreRemoteStateIfAvailable() async {
+        do {
+            guard let snapshot = try await appStateSyncService.fetch(userId: userId) else {
+                return
+            }
+            applyAppStateSnapshot(snapshot)
+        } catch {
+            print("[AppStateSync] Restore failed:", error.localizedDescription)
+        }
+    }
+
+    private func synchronizeAppStateInBackground() {
+        let snapshot = buildAppStateSnapshot()
+        Task {
+            do {
+                _ = try await appStateSyncService.save(userId: userId, payload: snapshot)
+            } catch {
+                print("[AppStateSync] Save failed:", error.localizedDescription)
+            }
+        }
     }
 
     private func syncJourney() {

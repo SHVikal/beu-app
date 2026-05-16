@@ -113,6 +113,49 @@ final class JourneyService {
         userDefaults.set(challengeID, forKey: selectedChallengeKey(for: userId))
     }
 
+    func persistenceSnapshot(for userId: String) -> JourneyPersistenceSnapshot {
+        JourneyPersistenceSnapshot(
+            selectedChallengeId: selectedChallenge(for: userId).id,
+            challenges: challenges.map { challenge in
+                JourneyChallengeStateSnapshot(
+                    challengeId: challenge.id,
+                    progress: existingProgress(for: userId, challengeID: challenge.id),
+                    dailyLogs: dailyLogs(for: userId, challengeID: challenge.id),
+                    achievements: achievements(for: userId, challengeID: challenge.id)
+                )
+            }
+        )
+    }
+
+    func restore(snapshot: JourneyPersistenceSnapshot?, for userId: String) {
+        guard let snapshot else {
+            return
+        }
+
+        userDefaults.set(snapshot.selectedChallengeId, forKey: selectedChallengeKey(for: userId))
+
+        for challenge in challenges {
+            let state = snapshot.challenges.first(where: { $0.challengeId == challenge.id })
+            if let progress = state?.progress, let data = try? encoder.encode(progress) {
+                userDefaults.set(data, forKey: progressKey(for: userId, challengeID: challenge.id))
+            } else {
+                userDefaults.removeObject(forKey: progressKey(for: userId, challengeID: challenge.id))
+            }
+
+            if let logs = state?.dailyLogs, let data = try? encoder.encode(logs) {
+                userDefaults.set(data, forKey: logsKey(for: userId, challengeID: challenge.id))
+            } else {
+                userDefaults.removeObject(forKey: logsKey(for: userId, challengeID: challenge.id))
+            }
+
+            if let achievements = state?.achievements, let data = try? encoder.encode(achievements) {
+                userDefaults.set(data, forKey: achievementsKey(for: userId, challengeID: challenge.id))
+            } else {
+                userDefaults.removeObject(forKey: achievementsKey(for: userId, challengeID: challenge.id))
+            }
+        }
+    }
+
     func syncJourneyProgress(
         userId: String,
         challengeID: String,
@@ -482,6 +525,14 @@ final class JourneyService {
             return []
         }
         return logs.sorted { $0.date < $1.date }
+    }
+
+    private func achievements(for userId: String, challengeID: String) -> [JourneyAchievement] {
+        guard let data = userDefaults.data(forKey: achievementsKey(for: userId, challengeID: challengeID)),
+              let achievements = try? decoder.decode([JourneyAchievement].self, from: data) else {
+            return []
+        }
+        return achievements
     }
 
     private func persist(progress: JourneyProgress, userId: String, challengeID: String) {

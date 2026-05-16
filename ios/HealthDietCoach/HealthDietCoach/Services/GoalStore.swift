@@ -49,6 +49,15 @@ final class GoalStore: ObservableObject {
         }
     }
 
+    func restore(_ goalConfig: GoalConfig?) {
+        guard let goalConfig else {
+            try? FileManager.default.removeItem(at: fileURL)
+            self.goalConfig = nil
+            return
+        }
+        save(goalConfig)
+    }
+
     private func clamped(_ goalConfig: GoalConfig) -> GoalConfig {
         var copy = goalConfig
         copy.customYears = min(max(copy.customYears, 1), 10)
@@ -80,6 +89,7 @@ final class WaterProgressStore: ObservableObject {
     private let defaults: UserDefaults
     private let dateFormatter = ISODateOnlyFormatter.shared
     private let maxHydrationMl = 4000
+    private let keyPrefix = "beu_water_"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -108,8 +118,38 @@ final class WaterProgressStore: ObservableObject {
     }
 
     private func key(for date: Date) -> String {
-        "beu_water_\(dateFormatter.string(from: date))"
+        keyPrefix + dateFormatter.string(from: date)
     }
+
+    func allEntries() -> [StoredWaterProgressEntry] {
+        defaults.dictionaryRepresentation()
+            .compactMap { key, value -> StoredWaterProgressEntry? in
+                guard key.hasPrefix(keyPrefix) else { return nil }
+                let date = String(key.dropFirst(keyPrefix.count))
+                let millilitres = min(max((value as? Int) ?? 0, 0), maxHydrationMl)
+                return StoredWaterProgressEntry(date: date, millilitres: millilitres)
+            }
+            .sorted { $0.date < $1.date }
+    }
+
+    func replaceAll(entries: [StoredWaterProgressEntry]) {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(keyPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+
+        for entry in entries {
+            defaults.set(min(max(entry.millilitres, 0), maxHydrationMl), forKey: keyPrefix + entry.date)
+        }
+
+        loadToday()
+    }
+}
+
+struct StoredWaterProgressEntry: Codable, Equatable, Identifiable {
+    let date: String
+    let millilitres: Int
+
+    var id: String { date }
 }
 
 enum ISODateOnlyFormatter {

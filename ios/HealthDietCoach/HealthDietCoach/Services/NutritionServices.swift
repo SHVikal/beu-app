@@ -401,6 +401,36 @@ final class MealLogService {
         return filtered.sorted { $0.createdAt < $1.createdAt }
     }
 
+    func allMealLogs(for userId: String) -> [MealLog] {
+        mealLogs(for: userId)
+    }
+
+    func replaceMealLogs(_ logs: [MealLog], userId: String) {
+        let normalized = logs.map { log in
+            normalizedMealLog(
+                MealLog(
+                    id: log.id,
+                    userId: log.userId,
+                    date: log.date,
+                    dayOfWeek: log.dayOfWeek,
+                    mealType: log.mealType,
+                    loggedAt: log.loggedAt,
+                    source: log.source,
+                    originalInput: log.originalInput,
+                    imageLocalPath: nil,
+                    items: log.items,
+                    totalCalories: log.totalCalories,
+                    totalProteinGrams: log.totalProteinGrams,
+                    totalCarbsGrams: log.totalCarbsGrams,
+                    totalFatGrams: log.totalFatGrams,
+                    createdAt: log.createdAt,
+                    updatedAt: log.updatedAt
+                )
+            )
+        }
+        persist(logs: normalized, userId: userId)
+    }
+
     @discardableResult
     func deleteMealLog(id: String, userId: String) -> Bool {
         let currentLogs = mealLogs(for: userId)
@@ -508,6 +538,10 @@ final class SupplementIntakeLogRepository {
         logs(for: userId).filter { $0.date == date }
     }
 
+    func allLogs(userId: String) -> [SupplementIntakeLog] {
+        logs(for: userId)
+    }
+
     func markTaken(userId: String, supplementId: String, date: String) -> SupplementIntakeLog {
         let now = ISO8601DateFormatter().string(from: Date())
         let log = SupplementIntakeLog(
@@ -532,6 +566,15 @@ final class SupplementIntakeLogRepository {
         var existing = logs(for: userId)
         existing.removeAll { $0.supplementId == supplementId && $0.date == date }
         persist(existing, userId: userId)
+    }
+
+    func replaceAll(_ logs: [SupplementIntakeLog], userId: String) {
+        let deduped = Dictionary(
+            logs.map { (SupplementIntakeLog.makeID(userId: userId, supplementId: $0.supplementId, date: $0.date), $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let sorted = deduped.values.sorted { $0.takenAt < $1.takenAt }
+        persist(sorted, userId: userId)
     }
 
     private func logs(for userId: String) -> [SupplementIntakeLog] {

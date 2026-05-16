@@ -123,3 +123,10 @@ CREATE TABLE IF NOT EXISTS health_conditions (
 
 CREATE INDEX IF NOT EXISTS idx_supplements_user ON supplements(user_id);
 CREATE INDEX IF NOT EXISTS idx_conditions_user ON health_conditions(user_id);
+
+CREATE TABLE IF NOT EXISTS user_app_state_snapshots (
+  user_id TEXT PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

@@ -43,6 +43,24 @@ final class OnboardingStore: ObservableObject {
         }
     }
 
+    func restore(baseline: Baseline?, createdAt: Date?) {
+        guard let baseline else {
+            reset()
+            return
+        }
+
+        let record = BaselineRecord(
+            baseline: baseline,
+            createdAt: createdAt ?? self.createdAt ?? Date()
+        )
+
+        if let data = try? encoder.encode(record) {
+            try? data.write(to: fileURL, options: .atomic)
+            self.baseline = record.baseline
+            self.createdAt = record.createdAt
+        }
+    }
+
     func reset() {
         try? FileManager.default.removeItem(at: fileURL)
         baseline = nil

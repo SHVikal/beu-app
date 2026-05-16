@@ -81,6 +81,8 @@
 		00A000000000000000000048 /* Services/AdaptiveCoachFeatureServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A000000000000000000148 /* Services/AdaptiveCoachFeatureServices.swift */; };
 		00A000000000000000000049 /* Views/Components/AdaptiveCoachFeatureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A000000000000000000149 /* Views/Components/AdaptiveCoachFeatureViews.swift */; };
 		00A00000000000000000004A /* Services/DynamicTargetService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A00000000000000000014A /* Services/DynamicTargetService.swift */; };
+		00A00000000000000000004B /* Models/AppStateSyncModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A00000000000000000014B /* Models/AppStateSyncModels.swift */; };
+		00A00000000000000000004C /* Services/AppStateSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00A00000000000000000014C /* Services/AppStateSyncService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -160,6 +162,8 @@
 		00A000000000000000000148 /* Services/AdaptiveCoachFeatureServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AdaptiveCoachFeatureServices.swift; sourceTree = "<group>"; };
 		00A000000000000000000149 /* Views/Components/AdaptiveCoachFeatureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/Components/AdaptiveCoachFeatureViews.swift; sourceTree = "<group>"; };
 		00A00000000000000000014A /* Services/DynamicTargetService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/DynamicTargetService.swift; sourceTree = "<group>"; };
+		00A00000000000000000014B /* Models/AppStateSyncModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/AppStateSyncModels.swift; sourceTree = "<group>"; };
+		00A00000000000000000014C /* Services/AppStateSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AppStateSyncService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -191,6 +195,7 @@
 				00A000000000000000000125 /* Models/Baseline.swift */,
 				00A000000000000000000126 /* Models/DailyPlan.swift */,
 				00A000000000000000000147 /* Models/AdaptiveCoachFeatureModels.swift */,
+				00A00000000000000000014B /* Models/AppStateSyncModels.swift */,
 				00A000000000000000000145 /* Models/AdaptivePlanModels.swift */,
 				00A000000000000000000135 /* Models/JourneyModels.swift */,
 				00A000000000000000000123 /* Models/Engine/ActionPlanModels.swift */,
@@ -202,6 +207,7 @@
 				00A000000000000000000146 /* Services/AdaptivePlanService.swift */,
 				00A000000000000000000148 /* Services/AdaptiveCoachFeatureServices.swift */,
 				00A00000000000000000014A /* Services/DynamicTargetService.swift */,
+				00A00000000000000000014C /* Services/AppStateSyncService.swift */,
 				00A000000000000000000134 /* Services/APIConfig.swift */,
 				00A00000000000000000010F /* Services/CameraPermissionService.swift */,
 				00A00000000000000000012A /* Services/GoalStore.swift */,
@@ -413,6 +419,8 @@
 				00A000000000000000000048 /* Services/AdaptiveCoachFeatureServices.swift in Sources */,
 				00A000000000000000000049 /* Views/Components/AdaptiveCoachFeatureViews.swift in Sources */,
 				00A00000000000000000004A /* Services/DynamicTargetService.swift in Sources */,
+				00A00000000000000000004B /* Models/AppStateSyncModels.swift in Sources */,
+				00A00000000000000000004C /* Services/AppStateSyncService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

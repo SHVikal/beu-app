@@ -39,6 +39,24 @@ final class APIClient {
         try await request(path: "/health", method: "GET", responseType: BackendHealthStatus.self)
     }
 
+    func fetchAppState(userId: String) async throws -> RemoteAppStateEnvelope {
+        try await request(path: "/api/app-state/\(userId)", method: "GET", responseType: RemoteAppStateEnvelope.self)
+    }
+
+    func saveAppState(userId: String, payload: AppStateSnapshotPayload) async throws -> RemoteAppStateEnvelope {
+        struct RequestBody: Codable {
+            let userId: String
+            let payload: AppStateSnapshotPayload
+        }
+
+        return try await send(
+            path: "/api/app-state/\(userId)",
+            method: "PUT",
+            body: RequestBody(userId: userId, payload: payload),
+            responseType: RemoteAppStateEnvelope.self
+        )
+    }
+
     func save(summary: HealthSummary) async throws -> HealthSummary {
         try await send(path: "/api/health-summary", method: "POST", body: summary, responseType: HealthSummary.self)
     }

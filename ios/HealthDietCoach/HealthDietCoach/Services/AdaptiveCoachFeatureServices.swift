@@ -893,6 +893,27 @@ final class AdaptiveCoachFeatureStore {
         encode(Array(chips.prefix(3)), forKey: Keys.weeklyFocusPrefix + userId)
     }
 
+    func snapshot(userId: String) -> AdaptiveCoachFeatureSnapshot {
+        AdaptiveCoachFeatureSnapshot(
+            savedMeals: savedMeals(userId: userId),
+            weeklyFocusChips: weeklyFocus(userId: userId)
+        )
+    }
+
+    func restore(snapshot: AdaptiveCoachFeatureSnapshot?, userId: String) {
+        if let savedMeals = snapshot?.savedMeals {
+            encode(savedMeals, forKey: Keys.savedMealsPrefix + userId)
+        } else {
+            defaults.removeObject(forKey: Keys.savedMealsPrefix + userId)
+        }
+
+        if let weeklyFocusChips = snapshot?.weeklyFocusChips {
+            encode(Array(weeklyFocusChips.prefix(3)), forKey: Keys.weeklyFocusPrefix + userId)
+        } else {
+            defaults.removeObject(forKey: Keys.weeklyFocusPrefix + userId)
+        }
+    }
+
     private func encode<T: Encodable>(_ value: T, forKey key: String) {
         guard let data = try? JSONEncoder().encode(value) else { return }
         defaults.set(data, forKey: key)
